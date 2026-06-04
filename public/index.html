@@ -83,7 +83,8 @@
   .src-block:not(.mine) .lt { color: var(--muted); }
   .new-line { cursor: text; }
   .new-line .lt.placeholder { color: var(--muted-2); font-style: italic; }
-  .new-line:hover .num, .new-line:hover .lt.placeholder { color: var(--accent); }
+  .new-line:hover .num, .new-line:hover .lt.placeholder, .new-line:hover .add-mark { color: var(--accent); }
+  .add-mark { flex: none; width: 52px; box-sizing: border-box; text-align: right; padding: 0 12px 0 8px; color: var(--muted-2); user-select: none; font-family: var(--mono); font-size: 12px; line-height: 21px; }
   .code-edit { display: flex; }
   .ln-col { flex: none; width: 52px; box-sizing: border-box; text-align: right; padding: 0 12px 0 8px; user-select: none; }
   .ln-col .num { display: block; width: auto; padding: 0; }
@@ -401,9 +402,9 @@
     function placeBlock(b) {
       const reals = [...blocks.values()].filter((x) => x !== b).sort((a, c) => a.position - c.position);
       const after = reals.find((x) => x.position > b.position);
-      const newRow = dom.sourceInner.querySelector('.new-line');
+      const bottomRow = dom.sourceInner.querySelector('.new-line.bottom');
       if (after) dom.sourceInner.insertBefore(b.srcEl, after.srcEl);
-      else dom.sourceInner.insertBefore(b.srcEl, newRow); // before the trailing "new line" row
+      else dom.sourceInner.insertBefore(b.srcEl, bottomRow); // before the trailing "new line" row
       if (after) dom.renderInner.insertBefore(b.renderEl, after.renderEl);
       else dom.renderInner.appendChild(b.renderEl);
       renumber();
@@ -420,16 +421,26 @@
       renderInto(b.renderBody, b.content);
     }
 
-    // The trailing "type to add a line" row — always last; also the empty state.
-    function ensureNewLineRow() {
-      let row = dom.sourceInner.querySelector('.new-line');
-      if (!row) {
-        row = document.createElement('div');
-        row.className = 'code-line new-line';
-        row.innerHTML = '<span class="num"></span><span class="lt placeholder">Type to add a line…</span>';
-        row.addEventListener('mousedown', (e) => { e.preventDefault(); appendNewBlock(); });
-      }
-      dom.sourceInner.appendChild(row); // (re)attach as the last child
+    // "Add a line" affordances: a bottom row (always; also the empty state) that
+    // appends, and a top row (only when there's ≥1 line) that prepends.
+    function makeAddRow(kind) {
+      const row = document.createElement('div');
+      row.className = 'code-line new-line ' + kind;
+      row.innerHTML = (kind === 'bottom')
+        ? '<span class="num"></span><span class="lt placeholder">Type to add a line…</span>'
+        : '<span class="add-mark">＋</span><span class="lt placeholder">Add a line at the top</span>';
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); kind === 'top' ? prependNewBlock() : appendNewBlock(); });
+      return row;
+    }
+    function ensureAffordances() {
+      const bottom = dom.sourceInner.querySelector('.new-line.bottom') || makeAddRow('bottom');
+      dom.sourceInner.appendChild(bottom); // keep last
+      let top = dom.sourceInner.querySelector('.new-line.top');
+      if (blocks.size > 0) {
+        if (!top) top = makeAddRow('top');
+        if (dom.sourceInner.firstChild !== top) dom.sourceInner.insertBefore(top, dom.sourceInner.firstChild);
+      } else if (top) { top.remove(); }
+
       let hint = dom.renderInner.querySelector('.doc-empty');
       if (blocks.size === 0) { if (!hint) { hint = document.createElement('div'); hint.className = 'doc-empty'; hint.textContent = 'Nothing yet — start typing on the left.'; dom.renderInner.appendChild(hint); } }
       else if (hint) hint.remove();
@@ -444,7 +455,7 @@
       if (b.srcEl) b.srcEl.remove();
       if (b.renderEl) b.renderEl.remove();
       blocks.delete(id);
-      ensureNewLineRow();
+      ensureAffordances();
     }
 
     // ----- Editing my own blocks (click a line to edit it inline) -----
@@ -507,12 +518,18 @@
       const pos = reals.length ? reals[reals.length - 1].position + 1 : 1;
       createMineAt(pos);
     }
+    function prependNewBlock() {
+      const reals = [...blocks.values()];
+      const minPos = reals.length ? Math.min(...reals.map((x) => x.position)) : 1;
+      createMineAt(minPos - 1);
+    }
     function createMineAt(position) {
       const b = { id: newId(), owner_id: myOwnerId, author: myName, content: '', position, updated_at: nowISO(), synced: false };
       blocks.set(b.id, b);
       makeBlock(b);
       placeBlock(b);
       renderBlock(b);
+      ensureAffordances();   // keep top/bottom add-rows present & positioned
       startEdit(b, 0);
       b.srcEl.scrollIntoView({ block: 'nearest' });
     }
@@ -645,7 +662,7 @@
         dom.renderInner.appendChild(b.renderEl);
         renderBlock(b);
       });
-      ensureNewLineRow();
+      ensureAffordances();
       // Replay anything that arrived while fetching (in order), then go live.
       const buffered = loadBuffer; loadBuffer = null;
       buffered.forEach((ev) => { if (ev.type === 'update') applyRemoteBlock(ev.msg); else removeLocal(ev.msg.id); });

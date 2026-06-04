@@ -67,30 +67,27 @@
   .scroll { flex: 1; overflow-y: auto; padding: 10px 16px 60px; }
   .doc-empty { color: var(--muted-2); font-style: italic; padding: 14px 4px; }
 
-  /* Source blocks (left) */
-  .src-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 6px 4px 8px 16px; margin: 5px 0; border-radius: 0 6px 6px 0; }
-  .src-block.mine { background: rgba(88,166,255,.04); }
-  .src-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
-  .src-head .a-name { font-weight: 600; font-size: 12px; }
   .you-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); background: rgba(88,166,255,.12); border: 1px solid rgba(88,166,255,.3); border-radius: 5px; padding: 0 5px; }
-  .src-head .controls { margin-left: auto; opacity: 0; transition: opacity .12s; }
-  .src-block:hover .controls { opacity: 1; }
-  .icon-btn { background: var(--chip); border: 1px solid var(--border); color: var(--muted); border-radius: 6px; font-size: 11.5px; padding: 2px 8px; cursor: pointer; }
-  .icon-btn:hover { color: var(--text); border-color: var(--border-2); }
-  .icon-btn.danger:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
-  textarea.src-ta { width: 100%; border: 1px solid transparent; background: var(--panel); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.55; padding: 9px 11px; border-radius: 8px; resize: none; outline: none; overflow: hidden; min-height: 38px; }
-  textarea.src-ta:focus { border-color: var(--accent); }
-  pre.raw { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12.5px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; }
 
-  /* One-click prompt shown only when the document is empty */
-  .start-prompt { display: inline-flex; align-items: center; gap: 6px; margin: 8px 2px; background: transparent; border: 1px dashed var(--border-2); color: var(--muted); border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 600; }
-  .start-prompt:hover { border-color: var(--accent); color: var(--accent); }
-
-  /* Click the start (left edge) of a line to insert a new line below it */
-  .insert-handle { position: absolute; left: -4px; top: 0; bottom: 0; width: 16px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; cursor: pointer; color: transparent; font-size: 15px; font-weight: 700; line-height: 1; border-radius: 0 0 0 7px; transition: background .1s, color .1s; }
-  .insert-handle::before { content: "＋"; }
-  .src-block:hover .insert-handle { color: var(--muted-2); }
-  .insert-handle:hover { background: rgba(88,166,255,.16); color: var(--accent); }
+  /* Left pane: ONE continuous, line-numbered code editor.
+     Your own blocks are click-to-edit inline; others' lines are read-only. */
+  #sourceScroll { padding: 8px 0 60px; }
+  .src-block { border-left: 2px solid var(--owner, transparent); }
+  .src-block.mine { cursor: text; }
+  .src-block.mine:hover { background: rgba(88,166,255,.05); }
+  .src-block.editing { background: rgba(88,166,255,.07); }
+  .code-line { display: flex; min-height: 21px; }
+  .num { flex: none; width: 52px; box-sizing: border-box; text-align: right; padding: 0 12px 0 8px; color: var(--muted-2); user-select: none; font-family: var(--mono); font-size: 12px; line-height: 21px; }
+  .src-block.mine .num { color: var(--accent); opacity: .7; }
+  .lt { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 13px; line-height: 21px; padding: 0 16px 0 0; color: var(--text); }
+  .src-block:not(.mine) .lt { color: var(--muted); }
+  .new-line { cursor: text; }
+  .new-line .lt.placeholder { color: var(--muted-2); font-style: italic; }
+  .new-line:hover .num, .new-line:hover .lt.placeholder { color: var(--accent); }
+  .code-edit { display: flex; }
+  .ln-col { flex: none; width: 52px; box-sizing: border-box; text-align: right; padding: 0 12px 0 8px; user-select: none; }
+  .ln-col .num { display: block; width: auto; padding: 0; }
+  .code-edit textarea { flex: 1; min-width: 0; border: none; outline: none; resize: none; overflow: hidden; background: transparent; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 21px; padding: 0 16px 0 0; }
 
   /* Rendered blocks (right) */
   .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 6px 4px 10px 16px; margin: 5px 0; border-radius: 0 6px 6px 0; }
@@ -205,7 +202,7 @@
         <div class="toolbar">
           <span class="editing-line" id="editingLine"></span>
           <span class="spacer"></span>
-          <span class="hint-line"><code>Enter</code> for a new line · <code>Shift+Enter</code> for a line break · <code>＋</code> inserts below</span>
+          <span class="hint-line">Click a line number to edit · <code>Enter</code> = new line · <code>Shift+Enter</code> = line break · clear a line to delete it</span>
         </div>
 
         <div class="editor-wrap">
@@ -245,9 +242,10 @@
     if (!myOwnerId) { myOwnerId = newId(); localStorage.setItem(OWNER_KEY, myOwnerId); }
     let topics = [];
     let currentTopicId = null;
-    const blocks = new Map();        // id -> block { id, author, content, position, ..., srcEl, ta|preEl, renderEl, renderBody, renderTime }
+    const blocks = new Map();        // id -> block { id, owner_id, author, content, position, ..., srcEl, ta, renderEl, renderBody, renderTime }
     const peerTyping = new Map();    // blockId -> { author, timer }  (someone else is typing this block)
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
+    let editingId = null;            // the block id I'm currently editing inline (one at a time)
 
     const el = (id) => document.getElementById(id);
     const dom = {
@@ -335,49 +333,16 @@
     function makeBlock(b) {
       const mine = b.owner_id === myOwnerId;
 
-      // --- Source (left) ---
+      // --- Source (left): a slot in the unified code editor ---
       const src = document.createElement('div');
       src.className = 'src-block' + (mine ? ' mine' : '');
       src.dataset.id = b.id;
       src.style.setProperty('--owner', colorFor(b.author));
-      src.innerHTML = `<div class="src-head">
-          <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
-          <span class="a-name"></span>${mine ? '<span class="you-badge">you</span>' : ''}
-          <span class="controls"></span>
-        </div><div class="src-body"></div>`;
-      src.querySelector('.a-name').textContent = b.author;
+      if (mine) src.addEventListener('mousedown', (e) => onSrcMousedown(e, b));
+      else src.title = 'owned by ' + b.author;
       b.srcEl = src;
-      const body = src.querySelector('.src-body');
-      const controls = src.querySelector('.controls');
-
-      // insert handle (anyone): add MY line below this one
-      const handle = document.createElement('div');
-      handle.className = 'insert-handle';
-      handle.title = 'Insert a line below';
-      handle.addEventListener('click', (e) => { e.stopPropagation(); insertBelow(b); });
-      src.insertBefore(handle, src.firstChild);
-
-      if (mine) {
-        const ta = document.createElement('textarea');
-        ta.className = 'src-ta'; ta.spellcheck = true;
-        ta.placeholder = 'Write Markdown… ```mermaid for a diagram.';
-        ta.value = b.content;
-        ta.addEventListener('input', () => onMyInput(b));
-        ta.addEventListener('blur', () => onMyBlur(b));
-        ta.addEventListener('keydown', (e) => onBlockKeydown(e, b));
-        body.appendChild(ta);
-        b.ta = ta;
-        const del = document.createElement('button');
-        del.className = 'icon-btn danger'; del.textContent = '🗑'; del.title = 'Delete this line';
-        del.addEventListener('mousedown', (e) => e.preventDefault());
-        del.addEventListener('click', (e) => { e.stopPropagation(); deleteBlock(b); });
-        controls.appendChild(del);
-      } else {
-        const pre = document.createElement('pre');
-        pre.className = 'raw'; pre.textContent = b.content;
-        body.appendChild(pre);
-        b.preEl = pre;
-      }
+      b.ta = null;
+      renderSrc(b);
 
       // --- Rendered (right) ---
       const rnd = document.createElement('div');
@@ -396,13 +361,52 @@
       b.renderTime = rnd.querySelector('.c-time');
     }
 
+    // Fill a block's source slot: read-only line rows, or an inline textarea if
+    // it's mine and being edited. Line numbers are assigned globally by renumber().
+    function renderSrc(b) {
+      const mine = b.owner_id === myOwnerId;
+      if (mine && editingId === b.id) {
+        b.srcEl.classList.add('editing');
+        b.srcEl.innerHTML = '<div class="code-edit"><div class="ln-col"></div><textarea spellcheck="true"></textarea></div>';
+        const ta = b.srcEl.querySelector('textarea');
+        ta.value = b.content;
+        b.ta = ta;
+        ta.addEventListener('input', () => onMyInput(b));
+        ta.addEventListener('blur', () => onMyBlur(b));
+        ta.addEventListener('keydown', (e) => onBlockKeydown(e, b));
+        syncLnCol(b);
+        autoGrow(ta);
+      } else {
+        b.srcEl.classList.remove('editing');
+        b.ta = null;
+        const lines = (b.content || '').split('\n');
+        b.srcEl.innerHTML = lines.map(() => '<div class="code-line"><span class="num"></span><span class="lt"></span></div>').join('');
+        const lts = b.srcEl.querySelectorAll('.lt');
+        lines.forEach((ln, i) => { lts[i].textContent = ln; });
+      }
+    }
+    // Keep the edit gutter's number count equal to the textarea's line count.
+    function syncLnCol(b) {
+      if (!b.ta) return;
+      const count = b.ta.value.split('\n').length || 1;
+      const col = b.srcEl.querySelector('.ln-col');
+      while (col.children.length < count) { const s = document.createElement('span'); s.className = 'num'; col.appendChild(s); }
+      while (col.children.length > count) col.removeChild(col.lastChild);
+    }
+    // Number every visible source line across the whole document, 1..N.
+    function renumber() {
+      dom.sourceInner.querySelectorAll('.num').forEach((el, i) => { el.textContent = String(i + 1); });
+    }
+
     function placeBlock(b) {
       const reals = [...blocks.values()].filter((x) => x !== b).sort((a, c) => a.position - c.position);
       const after = reals.find((x) => x.position > b.position);
-      if (after) { dom.sourceInner.insertBefore(b.srcEl, after.srcEl); dom.renderInner.insertBefore(b.renderEl, after.renderEl); }
-      else { dom.sourceInner.appendChild(b.srcEl); dom.renderInner.appendChild(b.renderEl); }
-      if (b.ta) autoGrow(b.ta);
-      refreshAddState();
+      const newRow = dom.sourceInner.querySelector('.new-line');
+      if (after) dom.sourceInner.insertBefore(b.srcEl, after.srcEl);
+      else dom.sourceInner.insertBefore(b.srcEl, newRow); // before the trailing "new line" row
+      if (after) dom.renderInner.insertBefore(b.renderEl, after.renderEl);
+      else dom.renderInner.appendChild(b.renderEl);
+      renumber();
     }
     function renderBlock(b) {
       b.renderTime.textContent = fmtTime(b.updated_at);
@@ -415,50 +419,73 @@
       // My own block renders live (with syntax errors); peers' committed blocks render too.
       renderInto(b.renderBody, b.content);
     }
-    // When the document is empty, offer a one-click "Add a line" prompt (no
-    // persistent empty input box). With ≥1 line, add via the per-line ＋ handles.
-    function refreshAddState() {
-      const empty = blocks.size === 0;
-      let prompt = dom.sourceInner.querySelector('.start-prompt');
-      if (empty) {
-        if (!prompt) {
-          prompt = document.createElement('button');
-          prompt.className = 'start-prompt';
-          prompt.textContent = '＋ Add a line';
-          prompt.addEventListener('click', () => createMineAt(1));
-          dom.sourceInner.appendChild(prompt);
-        }
-      } else if (prompt) prompt.remove();
 
+    // The trailing "type to add a line" row — always last; also the empty state.
+    function ensureNewLineRow() {
+      let row = dom.sourceInner.querySelector('.new-line');
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'code-line new-line';
+        row.innerHTML = '<span class="num"></span><span class="lt placeholder">Type to add a line…</span>';
+        row.addEventListener('mousedown', (e) => { e.preventDefault(); appendNewBlock(); });
+      }
+      dom.sourceInner.appendChild(row); // (re)attach as the last child
       let hint = dom.renderInner.querySelector('.doc-empty');
-      if (empty) { if (!hint) { hint = document.createElement('div'); hint.className = 'doc-empty'; hint.textContent = 'Nothing yet — add a line on the left.'; dom.renderInner.appendChild(hint); } }
+      if (blocks.size === 0) { if (!hint) { hint = document.createElement('div'); hint.className = 'doc-empty'; hint.textContent = 'Nothing yet — start typing on the left.'; dom.renderInner.appendChild(hint); } }
       else if (hint) hint.remove();
+      renumber();
     }
 
     function removeLocal(id) {
       const b = blocks.get(id);
       if (!b) return;
+      if (editingId === id) editingId = null;
       clearPeerTyping(id);
       if (b.srcEl) b.srcEl.remove();
       if (b.renderEl) b.renderEl.remove();
       blocks.delete(id);
-      refreshAddState();
+      ensureNewLineRow();
     }
-    function deleteBlock(b) { if (b.synced) emitDelete(b); removeLocal(b.id); }
 
-    // ----- Editing my own lines (textareas are always live — no edit mode) -----
+    // ----- Editing my own blocks (click a line to edit it inline) -----
+    function onSrcMousedown(e, b) {
+      if (editingId === b.id) return;          // already editing → let the textarea handle the click
+      e.preventDefault();                      // we'll focus the textarea ourselves
+      let caret = null;                        // place the caret at the clicked line
+      const row = e.target.closest('.code-line');
+      if (row) {
+        const idx = [...b.srcEl.querySelectorAll('.code-line')].indexOf(row);
+        if (idx >= 0) { const ls = (b.content || '').split('\n'); caret = ls.slice(0, idx).reduce((a, l) => a + l.length + 1, 0); }
+      }
+      startEdit(b, caret);
+    }
+    function startEdit(b, caret) {
+      if (editingId && editingId !== b.id) { const prev = blocks.get(editingId); if (prev && prev.ta) prev.ta.blur(); }
+      editingId = b.id;
+      renderSrc(b);
+      renumber();
+      const ta = b.ta;
+      ta.focus();
+      const pos = (caret == null) ? ta.value.length : Math.min(caret, ta.value.length);
+      ta.setSelectionRange(pos, pos);
+    }
     function onMyInput(b) {
       b.content = b.ta.value;
       b.updated_at = nowISO();
       autoGrow(b.ta);
+      syncLnCol(b);
+      renumber();
       renderBlock(b);                          // I always see my own live render (with errors)
       if (b.content.trim()) scheduleEmit(b);   // tells peers "typing" (editing: true)
     }
     function onMyBlur(b) {
+      if (editingId === b.id) editingId = null;
       if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty lines
       commitEmit(b);                           // commit (editing: false) → peers render it
+      renderSrc(b);                            // back to read-only line rows
+      renumber();
     }
-    // Enter starts a new line below; Shift+Enter (or being inside a ```fence) keeps a normal newline.
+    // Enter starts a new line below; Shift+Enter (or being inside a ```fence) keeps a newline.
     function onBlockKeydown(e, b) {
       if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
       const before = b.ta.value.slice(0, b.ta.selectionStart);
@@ -475,13 +502,18 @@
       const pos = next ? (ref.position + next.position) / 2 : ref.position + 1;
       createMineAt(pos);
     }
+    function appendNewBlock() {
+      const reals = [...blocks.values()].sort((a, c) => a.position - c.position);
+      const pos = reals.length ? reals[reals.length - 1].position + 1 : 1;
+      createMineAt(pos);
+    }
     function createMineAt(position) {
       const b = { id: newId(), owner_id: myOwnerId, author: myName, content: '', position, updated_at: nowISO(), synced: false };
       blocks.set(b.id, b);
       makeBlock(b);
       placeBlock(b);
       renderBlock(b);
-      b.ta.focus();
+      startEdit(b, 0);
       b.srcEl.scrollIntoView({ block: 'nearest' });
     }
 
@@ -517,8 +549,8 @@
         placeBlock(b);
       } else {
         b.content = msg.content; b.updated_at = msg.updated_at; b.position = msg.position; b.author = msg.author;
-        if (b.preEl) b.preEl.textContent = b.content;
-        if (b.ta) { b.ta.value = b.content; autoGrow(b.ta); }
+        renderSrc(b);          // refresh the read-only line rows on the left
+        renumber();
       }
       if (msg.editing) setPeerTyping(b); else clearPeerTyping(b.id);  // typing vs committed
       renderBlock(b);
@@ -577,7 +609,7 @@
     dom.topicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createTopic(); });
 
     function resetDoc() {
-      blocks.clear();
+      blocks.clear(); editingId = null;
       peerTyping.forEach((e) => e.timer && clearTimeout(e.timer)); peerTyping.clear();
       emitState.forEach((s) => s.timer && clearTimeout(s.timer)); emitState.clear();
       dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';
@@ -612,12 +644,12 @@
         dom.sourceInner.appendChild(b.srcEl);
         dom.renderInner.appendChild(b.renderEl);
         renderBlock(b);
-        if (b.ta) autoGrow(b.ta);
       });
+      ensureNewLineRow();
       // Replay anything that arrived while fetching (in order), then go live.
       const buffered = loadBuffer; loadBuffer = null;
       buffered.forEach((ev) => { if (ev.type === 'update') applyRemoteBlock(ev.msg); else removeLocal(ev.msg.id); });
-      refreshAddState();
+      renumber();
     }
 
     // ===================================================================

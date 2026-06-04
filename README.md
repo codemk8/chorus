@@ -13,10 +13,12 @@ No login. No build step. No submit button. Just a display name and a browser.
   `localStorage` and attributes every block you add.
 - **Topics** — anyone can create one; they appear instantly in everyone's
   sidebar.
-- **Side-by-side source & render** — two panes: **Markdown source on the left**,
-  the **live rendered document on the right** (scroll-synced). Your own lines on
-  the left are always-editable textareas; everyone else's show as read-only raw
-  source. The right pane is the rendered, attributed result for the whole topic.
+- **Side-by-side source & render** — two panes: a **line-numbered code editor on
+  the left**, the **live rendered document on the right** (scroll-synced). The
+  left is one continuous document: **click a line (or its number) to edit it
+  inline**, press **Enter** for a new line, **Shift+Enter** for a line break, and
+  clear a line to delete it. You can only edit lines you own; everyone else's are
+  read-only. The right pane is the rendered, attributed result for the whole topic.
 - **Typing-aware rendering** — while you're editing a line, **you** see your own
   live render, and any invalid Markdown/Mermaid surfaces the **actual syntax
   error** so you can fix it. **Others** don't see your half-written render — that

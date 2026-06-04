@@ -1,0 +1,38 @@
+{
+  "name": "chorus",
+  "version": "1.0.0",
+  "description": "Real-time collaborative Markdown discussions that stay conflict-free without a CRDT — every paragraph is a block owned by one person.",
+  "keywords": [
+    "collaborative",
+    "realtime",
+    "markdown",
+    "mermaid",
+    "socket.io",
+    "sqlite",
+    "websocket",
+    "no-crdt"
+  ],
+  "homepage": "https://github.com/codemk8/chorus#readme",
+  "bugs": {
+    "url": "https://github.com/codemk8/chorus/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codemk8/chorus.git"
+  },
+  "author": "YPZ",
+  "license": "MIT",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}

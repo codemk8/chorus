@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chorus — collaborative discussions</title>
+<style>
+  :root {
+    --bg:#0d1117; --bg-alt:#11161d; --panel:#161b22; --panel-2:#1c2230;
+    --border:#283042; --border-2:#353e52; --text:#e6edf3; --muted:#8b949e; --muted-2:#6e7681;
+    --accent:#58a6ff; --accent-2:#1f6feb; --green:#3fb950; --chip:#21262d; --danger:#f85149; --amber:#d9a441;
+    --radius:10px;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font-family: var(--sans); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  button { font-family: inherit; }
+
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar { width: 280px; min-width: 280px; background: var(--bg-alt); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .brand { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .brand .logo { width: 30px; height: 30px; display: grid; place-items: center; background: linear-gradient(135deg, var(--accent), #a371f7); border-radius: 8px; font-size: 18px; }
+  .brand h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+  .brand .sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .new-topic { padding: 14px; border-bottom: 1px solid var(--border); }
+  .new-topic-row { display: flex; gap: 8px; }
+  .new-topic input { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 8px; font-size: 13px; outline: none; }
+  .new-topic input:focus { border-color: var(--accent); }
+  .btn { background: var(--accent-2); color: #fff; border: none; border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background .15s ease, opacity .15s ease; }
+  .btn:hover { background: #2a7fff; }
+  .topics-head { padding: 14px 18px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-2); }
+  .topic-list { flex: 1; overflow-y: auto; padding: 4px 8px 16px; }
+  .topic { padding: 9px 11px; border-radius: 8px; cursor: pointer; margin-bottom: 2px; border: 1px solid transparent; transition: background .12s ease; }
+  .topic:hover { background: var(--panel); }
+  .topic.active { background: var(--panel-2); border-color: var(--border-2); }
+  .topic .t-title { font-weight: 600; font-size: 13.5px; word-break: break-word; }
+  .topic .t-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .topic-empty { padding: 16px 18px; color: var(--muted); font-size: 13px; }
+
+  /* Main */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topic-header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-alt); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .topic-header h2 { margin: 0; font-size: 18px; font-weight: 700; }
+  .topic-header .sub-line { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .online { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .online .label { font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; }
+  .user-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; }
+  .user-chip.me { border-color: var(--accent); }
+  .avatar { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: none; }
+
+  /* Toolbar */
+  .toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 24px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  .toolbar .editing-line { color: var(--accent); font-style: italic; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .hint-line { font-size: 12px; color: var(--muted-2); }
+  .toolbar .hint-line code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+
+  /* Split panes: source | rendered */
+  .editor-wrap { flex: 1; display: flex; min-height: 0; }
+  .pane { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .pane.source { border-right: 1px solid var(--border); }
+  .pane-label { font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; padding: 9px 18px; border-bottom: 1px solid var(--border); background: var(--bg-alt); display: flex; align-items: center; gap: 8px; }
+  .scroll { flex: 1; overflow-y: auto; padding: 10px 16px 60px; }
+  .doc-empty { color: var(--muted-2); font-style: italic; padding: 14px 4px; }
+
+  /* Source blocks (left) */
+  .src-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 6px 4px 8px 16px; margin: 5px 0; border-radius: 0 6px 6px 0; }
+  .src-block.mine { background: rgba(88,166,255,.04); }
+  .src-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .src-head .a-name { font-weight: 600; font-size: 12px; }
+  .you-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); background: rgba(88,166,255,.12); border: 1px solid rgba(88,166,255,.3); border-radius: 5px; padding: 0 5px; }
+  .src-head .controls { margin-left: auto; opacity: 0; transition: opacity .12s; }
+  .src-block:hover .controls { opacity: 1; }
+  .icon-btn { background: var(--chip); border: 1px solid var(--border); color: var(--muted); border-radius: 6px; font-size: 11.5px; padding: 2px 8px; cursor: pointer; }
+  .icon-btn:hover { color: var(--text); border-color: var(--border-2); }
+  .icon-btn.danger:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
+  textarea.src-ta { width: 100%; border: 1px solid transparent; background: var(--panel); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.55; padding: 9px 11px; border-radius: 8px; resize: none; outline: none; overflow: hidden; min-height: 38px; }
+  textarea.src-ta:focus { border-color: var(--accent); }
+  pre.raw { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12.5px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; }
+
+  /* One-click prompt shown only when the document is empty */
+  .start-prompt { display: inline-flex; align-items: center; gap: 6px; margin: 8px 2px; background: transparent; border: 1px dashed var(--border-2); color: var(--muted); border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .start-prompt:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Click the start (left edge) of a line to insert a new line below it */
+  .insert-handle { position: absolute; left: -4px; top: 0; bottom: 0; width: 16px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; cursor: pointer; color: transparent; font-size: 15px; font-weight: 700; line-height: 1; border-radius: 0 0 0 7px; transition: background .1s, color .1s; }
+  .insert-handle::before { content: "＋"; }
+  .src-block:hover .insert-handle { color: var(--muted-2); }
+  .insert-handle:hover { background: rgba(88,166,255,.16); color: var(--accent); }
+
+  /* Rendered blocks (right) */
+  .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 6px 4px 10px 16px; margin: 5px 0; border-radius: 0 6px 6px 0; }
+  .rnd-block.active { background: rgba(88,166,255,.06); }
+  .rnd-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .rnd-head .a-name { font-weight: 600; font-size: 12px; }
+  .rnd-head .c-time { font-size: 11px; color: var(--muted-2); }
+  .rnd-head .gutter-spin { display: none; }
+  .rnd-block.active .rnd-head .gutter-spin { display: inline-flex; }
+
+  /* Spinner */
+  .spin { width: 12px; height: 12px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .diagram-pending { display: flex; align-items: center; gap: 8px; justify-content: center; color: var(--muted); font-size: 12px; padding: 14px; background: #0b0f16; border: 1px dashed var(--border-2); border-radius: 8px; }
+  .diagram-idle { color: var(--amber); border-style: solid; }
+  .diagram-error { background: rgba(248,81,73,.08); border: 1px solid var(--danger); border-radius: 8px; padding: 10px 12px; margin: .6em 0; }
+  .diagram-error strong { display: block; color: #ffb1ab; font-size: 12.5px; margin-bottom: 6px; }
+  .diagram-error pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; color: #ffd7d4; }
+
+  /* "<author> is typing…" shown to others while a peer edits a block */
+  .typing-note { display: flex; align-items: center; gap: 8px; color: var(--accent); font-style: italic; font-size: 13px; padding: 6px 0; }
+
+  /* Placeholder */
+  .placeholder { flex: 1; display: grid; place-items: center; text-align: center; color: var(--muted); }
+  .placeholder .big { font-size: 40px; margin-bottom: 10px; }
+
+  /* Markdown */
+  .md { font-size: 14px; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md h1, .md h2, .md h3, .md h4 { margin: .7em 0 .4em; line-height: 1.3; }
+  .md h1 { font-size: 1.45em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  .md h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  .md h3 { font-size: 1.1em; }
+  .md p { margin: .5em 0; }
+  .md a { color: var(--accent); text-decoration: none; }
+  .md a:hover { text-decoration: underline; }
+  .md ul, .md ol { padding-left: 1.5em; margin: .5em 0; }
+  .md li { margin: .2em 0; }
+  .md blockquote { margin: .6em 0; padding: .2em 1em; border-left: 3px solid var(--border-2); color: var(--muted); }
+  .md code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); padding: 2px 6px; border-radius: 5px; }
+  .md pre { background: #0b0f16; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: .6em 0; }
+  .md pre code { background: none; padding: 0; font-size: 12.5px; }
+  .md table { border-collapse: collapse; margin: .6em 0; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 11px; }
+  .md th { background: var(--bg-alt); }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+  .md img { max-width: 100%; border-radius: 6px; }
+  .md .mermaid { background: #0b0f16; border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: .6em 0; text-align: center; overflow-x: auto; }
+
+  /* Name modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(1,4,9,.78); display: grid; place-items: center; z-index: 50; backdrop-filter: blur(3px); }
+  .modal { background: var(--panel); border: 1px solid var(--border-2); border-radius: 14px; padding: 28px; width: 360px; max-width: calc(100vw - 32px); box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .modal .logo-big { font-size: 34px; text-align: center; }
+  .modal h2 { margin: 8px 0 4px; text-align: center; font-size: 20px; }
+  .modal p { margin: 0 0 18px; text-align: center; color: var(--muted); font-size: 13px; }
+  .modal input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 11px 13px; border-radius: 9px; font-size: 14px; outline: none; }
+  .modal input:focus { border-color: var(--accent); }
+  .modal .btn { width: 100%; margin-top: 14px; padding: 11px; font-size: 14px; }
+  .modal .err { color: var(--danger); font-size: 12px; min-height: 16px; margin-top: 6px; text-align: center; }
+
+  .hidden { display: none !important; }
+  @media (max-width: 820px) { .editor-wrap { flex-direction: column; } .pane.source { border-right: none; border-bottom: 1px solid var(--border); } }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2a3140; border-radius: 8px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #39414f; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+  <div class="modal-overlay" id="nameModal">
+    <div class="modal">
+      <div class="logo-big">🎶</div>
+      <h2>Welcome to Chorus</h2>
+      <p>Pick a display name. It'll attribute every line you add.</p>
+      <input id="nameInput" type="text" placeholder="e.g. ada-lovelace" maxlength="60" autocomplete="off" />
+      <div class="err" id="nameErr"></div>
+      <button class="btn" id="nameSubmit">Join the discussion</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">🎶</div>
+        <div><h1>Chorus</h1><div class="sub" id="brandSub">collaborative discussions</div></div>
+      </div>
+      <div class="new-topic">
+        <div class="new-topic-row">
+          <input id="topicInput" type="text" placeholder="New topic title…" maxlength="120" autocomplete="off" />
+          <button class="btn" id="topicCreate">+</button>
+        </div>
+      </div>
+      <div class="topics-head">Topics</div>
+      <div class="topic-list" id="topicList"></div>
+    </aside>
+
+    <main class="main">
+      <div class="placeholder" id="placeholder">
+        <div><div class="big">💬</div><div>Select a topic, or create one to start the conversation.</div></div>
+      </div>
+
+      <div id="topicView" class="hidden" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+        <header class="topic-header">
+          <div>
+            <h2 id="topicTitle"></h2>
+            <div class="sub-line">Source on the left, live render on the right · each line is owned by its author</div>
+          </div>
+          <div class="online"><span class="label">Online</span><span id="onlineList"></span></div>
+        </header>
+
+        <div class="toolbar">
+          <span class="editing-line" id="editingLine"></span>
+          <span class="spacer"></span>
+          <span class="hint-line"><code>Enter</code> for a new line · <code>Shift+Enter</code> for a line break · <code>＋</code> inserts below</span>
+        </div>
+
+        <div class="editor-wrap">
+          <div class="pane source">
+            <div class="pane-label">Markdown source</div>
+            <div class="scroll" id="sourceScroll"><div id="sourceInner"></div></div>
+          </div>
+          <div class="pane render">
+            <div class="pane-label">Rendered</div>
+            <div class="scroll" id="renderScroll"><div id="renderInner"></div></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    const md = window.markdownit({ html: false, linkify: true, breaks: true, typographer: true });
+    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', suppressErrorRendering: true });
+    let mermaidSeq = 0;
+    const mermaidCache = new Map();
+    function cacheMermaid(src, svg) { mermaidCache.set(src, svg); if (mermaidCache.size > 300) mermaidCache.delete(mermaidCache.keys().next().value); }
+
+    // ----- State -----
+    const NAME_KEY = 'chorus:name';
+    const OWNER_KEY = 'chorus:ownerId';
+    let myName = localStorage.getItem(NAME_KEY) || '';
+    // Stable per-browser identity — ownership keys on this, NOT the display name,
+    // so renames keep your blocks and same-named users don't collide.
+    let myOwnerId = localStorage.getItem(OWNER_KEY);
+    if (!myOwnerId) { myOwnerId = newId(); localStorage.setItem(OWNER_KEY, myOwnerId); }
+    let topics = [];
+    let currentTopicId = null;
+    const blocks = new Map();        // id -> block { id, author, content, position, ..., srcEl, ta|preEl, renderEl, renderBody, renderTime }
+    const peerTyping = new Map();    // blockId -> { author, timer }  (someone else is typing this block)
+    let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
+
+    const el = (id) => document.getElementById(id);
+    const dom = {
+      nameModal: el('nameModal'), nameInput: el('nameInput'), nameErr: el('nameErr'), nameSubmit: el('nameSubmit'),
+      brandSub: el('brandSub'),
+      topicInput: el('topicInput'), topicCreate: el('topicCreate'), topicList: el('topicList'),
+      placeholder: el('placeholder'), topicView: el('topicView'),
+      topicTitle: el('topicTitle'), onlineList: el('onlineList'), editingLine: el('editingLine'),
+      sourceScroll: el('sourceScroll'), sourceInner: el('sourceInner'),
+      renderScroll: el('renderScroll'), renderInner: el('renderInner'),
+    };
+
+    // ----- Helpers -----
+    function colorFor(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return `hsl(${h}, 62%, 52%)`; }
+    function initials(name) { const p = name.replace(/[^a-zA-Z0-9 _-]/g, '').split(/[\s_-]+/).filter(Boolean); return p.length ? (p[0][0] + (p[1] ? p[1][0] : '')).toUpperCase() : name.slice(0, 2).toUpperCase(); }
+    function fmtTime(iso) { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    function escapeText(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function nowISO() { return new Date().toISOString(); }
+    function newId() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'b-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36); }
+    function autoGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.max(ta.scrollHeight, 38) + 'px'; }
+
+    // ----- Markdown + Mermaid rendering (shows real syntax errors) -----
+    // Renders markdown, then resolves ```mermaid fences. Invalid diagrams show
+    // the actual Mermaid syntax error so the author can fix it.
+    function renderInto(target, content) {
+      target.innerHTML = md.render(content || '');
+      const codes = [...target.querySelectorAll('pre > code.language-mermaid')];
+      if (!codes.length) return;
+      const pending = [];
+      codes.forEach((code) => {
+        const host = document.createElement('div');
+        host.className = 'mermaid';
+        const src = code.textContent;
+        host.dataset.src = src;
+        const cached = mermaidCache.get(src);
+        if (cached) host.innerHTML = cached;
+        else { host.innerHTML = '<div class="diagram-pending"><span class="spin"></span><span>rendering…</span></div>'; pending.push({ host, src }); }
+        code.parentElement.replaceWith(host);
+      });
+      if (!pending.length) return;
+      if (target.__mt) clearTimeout(target.__mt);
+      target.__mt = setTimeout(() => { pending.forEach(({ host, src }) => renderMermaid(host, src)); }, 300);
+    }
+    async function renderMermaid(host, src) {
+      if (!host.isConnected || host.dataset.src !== src) return;
+      try {
+        await mermaid.parse(src);                 // throws on a syntax error
+        const { svg } = await mermaid.render('mm' + (++mermaidSeq), src);
+        cacheMermaid(src, svg);
+        if (host.isConnected && host.dataset.src === src) host.innerHTML = svg;
+      } catch (err) {
+        if (!host.isConnected || host.dataset.src !== src) return;
+        const msg = (err && (err.str || err.message)) || 'Invalid diagram';
+        host.className = '';
+        host.innerHTML = '<div class="diagram-error"><strong>⚠ Mermaid syntax error</strong><pre></pre></div>';
+        host.querySelector('pre').textContent = String(msg).trim();
+      }
+    }
+
+    // ----- Peer-typing state: while a peer edits a block, others see only
+    // "<author> is typing…" instead of the half-written render. -----
+    function setPeerTyping(b) {
+      const e = peerTyping.get(b.id);
+      if (e && e.timer) clearTimeout(e.timer);
+      // Safety net: if updates stop (peer disconnected/crashed without committing),
+      // render their last content. Normal blur sends an explicit commit instead.
+      const timer = setTimeout(() => { peerTyping.delete(b.id); renderBlock(b); renderPresence(); }, 3500);
+      peerTyping.set(b.id, { author: b.author, timer });
+      renderPresence();
+    }
+    function clearPeerTyping(id) {
+      const e = peerTyping.get(id);
+      if (e && e.timer) clearTimeout(e.timer);
+      peerTyping.delete(id);
+      renderPresence();
+    }
+    function renderPresence() {
+      const names = [...new Set([...peerTyping.values()].map((e) => e.author).filter((a) => a !== myName))];
+      if (!names.length) { dom.editingLine.innerHTML = ''; return; }
+      const label = names.length === 1 ? `${names[0]} is typing…` : names.length === 2 ? `${names[0]} and ${names[1]} are typing…` : `${names.length} people are typing…`;
+      dom.editingLine.innerHTML = '<span class="spin"></span>' + escapeText(label);
+    }
+
+    // ----- Block elements (source + render) -----
+    function makeBlock(b) {
+      const mine = b.owner_id === myOwnerId;
+
+      // --- Source (left) ---
+      const src = document.createElement('div');
+      src.className = 'src-block' + (mine ? ' mine' : '');
+      src.dataset.id = b.id;
+      src.style.setProperty('--owner', colorFor(b.author));
+      src.innerHTML = `<div class="src-head">
+          <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
+          <span class="a-name"></span>${mine ? '<span class="you-badge">you</span>' : ''}
+          <span class="controls"></span>
+        </div><div class="src-body"></div>`;
+      src.querySelector('.a-name').textContent = b.author;
+      b.srcEl = src;
+      const body = src.querySelector('.src-body');
+      const controls = src.querySelector('.controls');
+
+      // insert handle (anyone): add MY line below this one
+      const handle = document.createElement('div');
+      handle.className = 'insert-handle';
+      handle.title = 'Insert a line below';
+      handle.addEventListener('click', (e) => { e.stopPropagation(); insertBelow(b); });
+      src.insertBefore(handle, src.firstChild);
+
+      if (mine) {
+        const ta = document.createElement('textarea');
+        ta.className = 'src-ta'; ta.spellcheck = true;
+        ta.placeholder = 'Write Markdown… ```mermaid for a diagram.';
+        ta.value = b.content;
+        ta.addEventListener('input', () => onMyInput(b));
+        ta.addEventListener('blur', () => onMyBlur(b));
+        ta.addEventListener('keydown', (e) => onBlockKeydown(e, b));
+        body.appendChild(ta);
+        b.ta = ta;
+        const del = document.createElement('button');
+        del.className = 'icon-btn danger'; del.textContent = '🗑'; del.title = 'Delete this line';
+        del.addEventListener('mousedown', (e) => e.preventDefault());
+        del.addEventListener('click', (e) => { e.stopPropagation(); deleteBlock(b); });
+        controls.appendChild(del);
+      } else {
+        const pre = document.createElement('pre');
+        pre.className = 'raw'; pre.textContent = b.content;
+        body.appendChild(pre);
+        b.preEl = pre;
+      }
+
+      // --- Rendered (right) ---
+      const rnd = document.createElement('div');
+      rnd.className = 'rnd-block' + (mine ? ' mine' : '');
+      rnd.dataset.id = b.id;
+      rnd.style.setProperty('--owner', colorFor(b.author));
+      rnd.innerHTML = `<div class="rnd-head">
+          <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
+          <span class="a-name"></span>${mine ? '<span class="you-badge">you</span>' : ''}
+          <span class="gutter-spin"><span class="spin"></span></span>
+          <span class="c-time"></span>
+        </div><div class="md rnd-body"></div>`;
+      rnd.querySelector('.a-name').textContent = b.author;
+      b.renderEl = rnd;
+      b.renderBody = rnd.querySelector('.rnd-body');
+      b.renderTime = rnd.querySelector('.c-time');
+    }
+
+    function placeBlock(b) {
+      const reals = [...blocks.values()].filter((x) => x !== b).sort((a, c) => a.position - c.position);
+      const after = reals.find((x) => x.position > b.position);
+      if (after) { dom.sourceInner.insertBefore(b.srcEl, after.srcEl); dom.renderInner.insertBefore(b.renderEl, after.renderEl); }
+      else { dom.sourceInner.appendChild(b.srcEl); dom.renderInner.appendChild(b.renderEl); }
+      if (b.ta) autoGrow(b.ta);
+      refreshAddState();
+    }
+    function renderBlock(b) {
+      b.renderTime.textContent = fmtTime(b.updated_at);
+      // Others' in-progress block → show only "<author> is typing…".
+      if (b.owner_id !== myOwnerId && peerTyping.has(b.id)) {
+        b.renderBody.innerHTML = '<div class="typing-note"><span class="spin"></span><span></span></div>';
+        b.renderBody.querySelector('span:last-child').textContent = b.author + ' is typing…';
+        return;
+      }
+      // My own block renders live (with syntax errors); peers' committed blocks render too.
+      renderInto(b.renderBody, b.content);
+    }
+    // When the document is empty, offer a one-click "Add a line" prompt (no
+    // persistent empty input box). With ≥1 line, add via the per-line ＋ handles.
+    function refreshAddState() {
+      const empty = blocks.size === 0;
+      let prompt = dom.sourceInner.querySelector('.start-prompt');
+      if (empty) {
+        if (!prompt) {
+          prompt = document.createElement('button');
+          prompt.className = 'start-prompt';
+          prompt.textContent = '＋ Add a line';
+          prompt.addEventListener('click', () => createMineAt(1));
+          dom.sourceInner.appendChild(prompt);
+        }
+      } else if (prompt) prompt.remove();
+
+      let hint = dom.renderInner.querySelector('.doc-empty');
+      if (empty) { if (!hint) { hint = document.createElement('div'); hint.className = 'doc-empty'; hint.textContent = 'Nothing yet — add a line on the left.'; dom.renderInner.appendChild(hint); } }
+      else if (hint) hint.remove();
+    }
+
+    function removeLocal(id) {
+      const b = blocks.get(id);
+      if (!b) return;
+      clearPeerTyping(id);
+      if (b.srcEl) b.srcEl.remove();
+      if (b.renderEl) b.renderEl.remove();
+      blocks.delete(id);
+      refreshAddState();
+    }
+    function deleteBlock(b) { if (b.synced) emitDelete(b); removeLocal(b.id); }
+
+    // ----- Editing my own lines (textareas are always live — no edit mode) -----
+    function onMyInput(b) {
+      b.content = b.ta.value;
+      b.updated_at = nowISO();
+      autoGrow(b.ta);
+      renderBlock(b);                          // I always see my own live render (with errors)
+      if (b.content.trim()) scheduleEmit(b);   // tells peers "typing" (editing: true)
+    }
+    function onMyBlur(b) {
+      if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty lines
+      commitEmit(b);                           // commit (editing: false) → peers render it
+    }
+    // Enter starts a new line below; Shift+Enter (or being inside a ```fence) keeps a normal newline.
+    function onBlockKeydown(e, b) {
+      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+      const before = b.ta.value.slice(0, b.ta.selectionStart);
+      const insideFence = ((before.match(/```/g) || []).length % 2) === 1;
+      if (insideFence) return;                 // multi-line code/mermaid → normal newline
+      e.preventDefault();
+      insertBelow(b);                          // new line below, focused
+    }
+
+    function insertBelow(ref) {
+      const reals = [...blocks.values()].sort((a, c) => a.position - c.position);
+      const idx = reals.findIndex((x) => x.id === ref.id);
+      const next = reals[idx + 1];
+      const pos = next ? (ref.position + next.position) / 2 : ref.position + 1;
+      createMineAt(pos);
+    }
+    function createMineAt(position) {
+      const b = { id: newId(), owner_id: myOwnerId, author: myName, content: '', position, updated_at: nowISO(), synced: false };
+      blocks.set(b.id, b);
+      makeBlock(b);
+      placeBlock(b);
+      renderBlock(b);
+      b.ta.focus();
+      b.srcEl.scrollIntoView({ block: 'nearest' });
+    }
+
+    // ----- Emit (throttled per block) -----
+    // editing:true while actively typing (peers show "typing"); editing:false on
+    // blur to commit (peers render the result).
+    const emitState = new Map();
+    function send(b, editing) {
+      const st = emitState.get(b.id) || { timer: null, last: 0 };
+      st.last = Date.now(); st.timer = null; emitState.set(b.id, st);
+      if (!currentTopicId) return;
+      socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position, editing: !!editing });
+      b.synced = true;
+    }
+    function scheduleEmit(b) {
+      const st = emitState.get(b.id) || { timer: null, last: 0 }; emitState.set(b.id, st);
+      const wait = 120 - (Date.now() - st.last);
+      if (wait <= 0) send(b, true); else if (!st.timer) st.timer = setTimeout(() => send(b, true), wait);
+    }
+    function commitEmit(b) { const st = emitState.get(b.id); if (st && st.timer) { clearTimeout(st.timer); st.timer = null; } send(b, false); }
+    function emitDelete(b) { const st = emitState.get(b.id); if (st && st.timer) clearTimeout(st.timer); emitState.delete(b.id); if (currentTopicId) socket.emit('block:delete', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId }); }
+
+    // ----- Remote changes -----
+    function applyRemoteBlock(msg) {
+      let b = blocks.get(msg.id);
+      // Monotonic by updated_at: never apply an event older than what we already have
+      // (protects against replay/out-of-order delivery; ISO timestamps sort chronologically).
+      if (b && b.updated_at && msg.updated_at && msg.updated_at < b.updated_at) return;
+      if (!b) {
+        b = { id: msg.id, owner_id: msg.owner_id, author: msg.author, content: msg.content, position: msg.position, updated_at: msg.updated_at, synced: true };
+        blocks.set(b.id, b);
+        makeBlock(b);
+        placeBlock(b);
+      } else {
+        b.content = msg.content; b.updated_at = msg.updated_at; b.position = msg.position; b.author = msg.author;
+        if (b.preEl) b.preEl.textContent = b.content;
+        if (b.ta) { b.ta.value = b.content; autoGrow(b.ta); }
+      }
+      if (msg.editing) setPeerTyping(b); else clearPeerTyping(b.id);  // typing vs committed
+      renderBlock(b);
+    }
+
+    // ----- Scroll sync between the two panes -----
+    let scrollLock = false;
+    function syncScroll(from, to) {
+      if (scrollLock) return;
+      scrollLock = true;
+      const denom = (from.scrollHeight - from.clientHeight) || 1;
+      to.scrollTop = (from.scrollTop / denom) * (to.scrollHeight - to.clientHeight);
+      requestAnimationFrame(() => { scrollLock = false; });
+    }
+    dom.sourceScroll.addEventListener('scroll', () => syncScroll(dom.sourceScroll, dom.renderScroll));
+    dom.renderScroll.addEventListener('scroll', () => syncScroll(dom.renderScroll, dom.sourceScroll));
+
+    // ===================================================================
+    // Name modal
+    // ===================================================================
+    function openNameModal() { dom.nameModal.classList.remove('hidden'); dom.nameInput.focus(); }
+    function closeNameModal() { dom.nameModal.classList.add('hidden'); }
+    function commitName() {
+      const name = dom.nameInput.value.trim();
+      if (name.length < 2) { dom.nameErr.textContent = 'Please enter at least 2 characters.'; return; }
+      myName = name; localStorage.setItem(NAME_KEY, name);
+      dom.brandSub.textContent = 'you are ' + name;
+      closeNameModal();
+      if (currentTopicId) joinTopicRoom();
+    }
+    dom.nameSubmit.addEventListener('click', commitName);
+    dom.nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitName(); });
+
+    // ===================================================================
+    // Topics
+    // ===================================================================
+    function renderTopicList() {
+      if (!topics.length) { dom.topicList.innerHTML = '<div class="topic-empty">No topics yet.<br>Create the first one above.</div>'; return; }
+      dom.topicList.innerHTML = '';
+      topics.forEach((t) => {
+        const div = document.createElement('div');
+        div.className = 'topic' + (t.id === currentTopicId ? ' active' : '');
+        div.innerHTML = `<div class="t-title"></div><div class="t-meta">${fmtTime(t.created_at)}</div>`;
+        div.querySelector('.t-title').textContent = t.title;
+        div.addEventListener('click', () => selectTopic(t.id));
+        dom.topicList.appendChild(div);
+      });
+    }
+    function createTopic() {
+      const title = dom.topicInput.value.trim();
+      if (!title) return;
+      socket.emit('topic:create', { title });
+      dom.topicInput.value = '';
+    }
+    dom.topicCreate.addEventListener('click', createTopic);
+    dom.topicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createTopic(); });
+
+    function resetDoc() {
+      blocks.clear();
+      peerTyping.forEach((e) => e.timer && clearTimeout(e.timer)); peerTyping.clear();
+      emitState.forEach((s) => s.timer && clearTimeout(s.timer)); emitState.clear();
+      dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';
+      renderPresence();
+    }
+    function selectTopic(id) {
+      if (id === currentTopicId) return;
+      currentTopicId = id;
+      resetDoc();
+      renderTopicList();
+      const topic = topics.find((t) => t.id === id);
+      dom.placeholder.classList.add('hidden');
+      dom.topicView.classList.remove('hidden');
+      dom.topicTitle.textContent = topic ? topic.title : 'Topic';
+      dom.onlineList.innerHTML = '';
+      joinTopicRoom();
+      loadBlocks(id);
+    }
+    function joinTopicRoom() { if (currentTopicId && myName) socket.emit('topic:join', { topicId: currentTopicId, name: myName }); }
+
+    async function loadBlocks(id) {
+      loadBuffer = [];                 // capture live block events that arrive during the fetch
+      let list = [];
+      try { list = await (await fetch(`/api/topics/${id}/blocks`)).json(); } catch (e) { list = []; }
+      if (id !== currentTopicId) return; // stale load — a newer load now owns loadBuffer
+      resetDoc();
+      const rows = Array.isArray(list) ? list : [];
+      rows.forEach((row) => {
+        const b = { id: row.id, owner_id: row.owner_id, author: row.author, content: row.content, position: row.position, updated_at: row.updated_at, synced: true };
+        blocks.set(b.id, b);
+        makeBlock(b);
+        dom.sourceInner.appendChild(b.srcEl);
+        dom.renderInner.appendChild(b.renderEl);
+        renderBlock(b);
+        if (b.ta) autoGrow(b.ta);
+      });
+      // Replay anything that arrived while fetching (in order), then go live.
+      const buffered = loadBuffer; loadBuffer = null;
+      buffered.forEach((ev) => { if (ev.type === 'update') applyRemoteBlock(ev.msg); else removeLocal(ev.msg.id); });
+      refreshAddState();
+    }
+
+    // ===================================================================
+    // Online users
+    // ===================================================================
+    function renderOnline(users) {
+      dom.onlineList.innerHTML = '';
+      users.forEach((u) => {
+        const span = document.createElement('span');
+        span.className = 'user-chip' + (u === myName ? ' me' : '');
+        span.innerHTML = `<span class="avatar" style="background:${colorFor(u)}">${escapeText(initials(u))}</span>`;
+        const name = document.createElement('span'); name.textContent = u === myName ? u + ' (you)' : u;
+        span.appendChild(name);
+        dom.onlineList.appendChild(span);
+      });
+    }
+
+    // ===================================================================
+    // Socket.io
+    // ===================================================================
+    const socket = io();
+    socket.on('topic:created', (topic) => { if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); } });
+    socket.on('block:update', (msg) => {
+      if (msg.topicId !== currentTopicId || msg.owner_id === myOwnerId) return;
+      if (loadBuffer) { loadBuffer.push({ type: 'update', msg }); return; } // mid-load → queue
+      applyRemoteBlock(msg);
+    });
+    socket.on('block:delete', (msg) => {
+      if (msg.topicId !== currentTopicId) return;
+      if (loadBuffer) { loadBuffer.push({ type: 'delete', msg }); return; } // mid-load → queue
+      removeLocal(msg.id);
+    });
+    socket.on('users:update', (users) => renderOnline(users || []));
+    socket.on('user:join', () => {});
+    socket.on('connect', () => { if (currentTopicId) joinTopicRoom(); });
+
+    // ===================================================================
+    // Boot
+    // ===================================================================
+    async function boot() {
+      if (myName) dom.brandSub.textContent = 'you are ' + myName; else openNameModal();
+      try { topics = await (await fetch('/api/topics')).json(); } catch (e) { topics = []; }
+      renderTopicList();
+    }
+    boot();
+  })();
+  </script>
+</body>
+</html>

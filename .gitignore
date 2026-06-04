@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# SQLite database (created at runtime)
+chorus.db
+chorus.db-shm
+chorus.db-wal
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment / secrets
+.env
+.env.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

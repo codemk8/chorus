@@ -180,13 +180,46 @@ ordered owned blocks, and the assembled Markdown:
 The `markdown` field joins the blocks in order — handy for exporting or copying the
 whole topic as one Markdown file. Unknown topics return `404`.
 
+## Deploying a public demo
+
+Chorus is a long-lived Node process with **WebSockets + a local SQLite file**, so
+it wants a persistent-process host (a container/VM), **not** serverless/edge.
+
+A `Dockerfile` is included. It listens on `0.0.0.0`, reads `PORT` from the host,
+and stores the DB at `CHORUS_DB=/data/chorus.db` (mount a volume at `/data` to keep
+data across restarts).
+
+```bash
+docker build -t chorus .
+docker run -p 3000:3000 -v chorus-data:/data chorus
+```
+
+Free-ish hosts:
+
+- **Fly.io** — WebSockets + a small persistent volume; low usage is effectively
+  free. `fly launch` (Dockerfile detected) → add a volume mounted at `/data`.
+- **Render** (free web service) — one click from the repo, but it **sleeps when
+  idle** and its free disk is **ephemeral**, so the DB resets on restart/redeploy.
+  For a demo that auto-reset is arguably a feature (it clears spam).
+
+> **GitHub Pages can't host it** — Pages is static-only and Chorus needs a live
+> server. GitHub hosts the code; the demo runs on one of the above.
+
+**Demo guardrails** (already built in, tunable via env): per-socket rate limits on
+all socket events, a 256 KB payload cap, `MAX_TOPICS` (default 300), and
+`MAX_BLOCKS_PER_TOPIC` (default 1000). There is still **no authentication or
+moderation** — anyone with the URL can post, so treat a public demo as an open,
+disposable sandbox.
+
 ## Project structure
 
 ```
 chorus/
 ├── package.json
 ├── server.js          # All backend logic: Express + Socket.io + SQLite
+├── Dockerfile         # Container image for deploying a demo
 ├── README.md
+├── LICENSE
 └── public/
     └── index.html     # Entire frontend: inline CSS + JS
 ```

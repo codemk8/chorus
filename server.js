@@ -68,6 +68,16 @@ const q = {
   // author can change (rename) on edit; ownership (owner_id) never does.
   updateBlock: db.prepare('UPDATE blocks SET content = ?, author = ?, updated_at = ? WHERE id = ?'),
   deleteBlock: db.prepare('DELETE FROM blocks WHERE id = ?'),
+  countTopics: db.prepare('SELECT COUNT(*) AS n FROM topics'),
+  countBlocksInTopic: db.prepare('SELECT COUNT(*) AS n FROM blocks WHERE topic_id = ?'),
+};
+
+// Public-demo guardrails — bound storage so a single server can't be flooded.
+const LIMITS = {
+  maxTopics: Number(process.env.MAX_TOPICS) || 300,
+  maxBlocksPerTopic: Number(process.env.MAX_BLOCKS_PER_TOPIC) || 1000,
+  maxContent: 100000,
+  maxTitle: 120,
 };
 
 // Insert-or-update a block, enforcing ownership by the stable owner_id (not the
@@ -80,6 +90,7 @@ function saveBlock({ id, topicId, ownerId, author, content, position }) {
     if (existing.owner_id !== ownerId) return null; // only the owner may edit
     q.updateBlock.run(content, author, now, id);
   } else {
+    if (q.countBlocksInTopic.get(topicId).n >= LIMITS.maxBlocksPerTopic) return null; // cap reached
     q.insertBlock.run(id, topicId, ownerId, author, content, Number(position) || 0, now, now);
   }
   return q.blockById.get(id);
@@ -131,9 +142,20 @@ app.get('/api/topics/:id/document', (req, res) => {
 // Socket.io real-time layer
 // ---------------------------------------------------------------------------
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, { maxHttpBufferSize: 256 * 1024 }); // bound inbound payloads
 
 const roomName = (topicId) => `topic:${topicId}`;
+
+// Per-socket fixed-window rate limiter. Returns false when the caller should
+// drop the event. Keeps one server from being flooded by a single connection.
+function rateLimit(socket, key, max, windowMs) {
+  const now = Date.now();
+  const buckets = socket.data.rl || (socket.data.rl = {});
+  let b = buckets[key];
+  if (!b || now - b.start >= windowMs) b = buckets[key] = { start: now, count: 0 };
+  b.count += 1;
+  return b.count <= max;
+}
 
 // Distinct online display-names currently inside a topic room.
 async function onlineUsers(room) {
@@ -153,6 +175,7 @@ io.on('connection', (socket) => {
   // A user opens a topic.
   socket.on('topic:join', async ({ topicId, name }) => {
     if (!topicId || !name) return;
+    if (!rateLimit(socket, 'join', 40, 10000)) return;
 
     // Leave a previously-open topic, if any.
     if (socket.data.topicId && socket.data.topicId !== topicId) {
@@ -174,7 +197,9 @@ io.on('connection', (socket) => {
   socket.on('topic:create', ({ title }) => {
     const clean = String(title || '').trim();
     if (!clean) return;
-    const info = q.insertTopic.run(clean.slice(0, 120), new Date().toISOString());
+    if (!rateLimit(socket, 'topicCreate', 8, 60000)) return;
+    if (q.countTopics.get().n >= LIMITS.maxTopics) return; // cap reached
+    const info = q.insertTopic.run(clean.slice(0, LIMITS.maxTitle), new Date().toISOString());
     const topic = q.topicById.get(info.lastInsertRowid);
     io.emit('topic:created', topic);
   });
@@ -187,7 +212,8 @@ io.on('connection', (socket) => {
     const who = String(author || '').trim();
     const blockId = String(id || '').trim();
     if (!topicId || !owner || !blockId) return;
-    const body = String(content == null ? '' : content).slice(0, 100000);
+    if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return;
+    const body = String(content == null ? '' : content).slice(0, LIMITS.maxContent);
 
     const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: owner, author: who, content: body, position });
     if (!row) return; // rejected (not the owner)
@@ -208,6 +234,7 @@ io.on('connection', (socket) => {
     const owner = String(ownerId || '').trim();
     const blockId = String(id || '').trim();
     if (!topicId || !owner || !blockId) return;
+    if (!rateLimit(socket, 'blockDelete', 30, 5000)) return;
     if (removeBlock(blockId, owner)) {
       socket.to(roomName(topicId)).emit('block:delete', { topicId: Number(topicId), id: blockId });
     }

@@ -8,6 +8,11 @@ per topic, built from author-owned **blocks** and rendered with inline
 No build step. No submit button. Just a browser — sign in, pick a display name,
 and start writing.
 
+![Chorus: a line-numbered Markdown editor on the left and the live rendered document on the right, with per-author colored ownership bars, a Mermaid flowchart, and syntax-highlighted Python](docs/hero.png)
+
+> Two people (alice 🔴 and bob 🟢) co-authoring one document — each block owned by
+> one person, rendered live with Mermaid diagrams and syntax highlighting.
+
 ## Features
 
 - **Login by default** — the server requires a sign-in. Start it and it prints a
@@ -91,6 +96,12 @@ and start writing.
   the choice is saved to `localStorage` and Mermaid diagrams re-render to match.
 - **Clean, developer-friendly UI** — topics sidebar + a single shared block
   document, in your theme of choice.
+
+### 17 built-in themes
+
+The whole UI — chrome, code highlighting, and Mermaid diagrams — recolors instantly.
+
+![Chorus in four themes: Dracula, Tokyo Night, Synthwave '84, and Catppuccin Latte](docs/themes.jpg)
 
 ## How it works (the idea)
 

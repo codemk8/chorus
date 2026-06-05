@@ -72,7 +72,7 @@
   /* Left pane: ONE continuous, line-numbered code editor.
      Your own blocks are click-to-edit inline; others' lines are read-only. */
   #sourceScroll { padding: 8px 0 60px; }
-  .src-block { border-left: 2px solid var(--owner, transparent); }
+  .src-block { position: relative; border-left: 2px solid var(--owner, transparent); }
   .src-block.mine { cursor: text; }
   .src-block.mine:hover { background: rgba(88,166,255,.05); }
   .src-block.editing { background: rgba(88,166,255,.07); }
@@ -89,6 +89,14 @@
   .ln-col { flex: none; width: 52px; box-sizing: border-box; text-align: right; padding: 0 12px 0 8px; user-select: none; }
   .ln-col .num { display: block; width: auto; padding: 0; }
   .code-edit textarea { flex: 1; min-width: 0; border: none; outline: none; resize: none; overflow: hidden; background: transparent; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 21px; padding: 0 16px 0 0; }
+
+  /* Hover "＋" at a block's bottom edge → insert a new line between it and the next */
+  .insert-after { position: absolute; left: 0; right: 0; bottom: -5px; height: 11px; z-index: 3; cursor: pointer; opacity: 0; pointer-events: none; }
+  .src-block:hover > .insert-after { opacity: 1; pointer-events: auto; }
+  .src-block.editing > .insert-after { display: none; }
+  .insert-after::before { content: "＋"; position: absolute; top: 50%; transform: translateY(-50%); left: 0; width: 52px; box-sizing: border-box; padding-right: 12px; text-align: right; color: var(--accent); font-weight: 700; font-size: 13px; font-family: var(--mono); }
+  .insert-after::after { content: ""; position: absolute; top: 50%; transform: translateY(-50%); left: 52px; right: 16px; height: 2px; background: rgba(88,166,255,.4); border-radius: 2px; }
+  .insert-after:hover::after { background: var(--accent); }
 
   /* Rendered blocks (right) */
   .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 6px 4px 10px 16px; margin: 5px 0; border-radius: 0 6px 6px 0; }
@@ -341,7 +349,17 @@
       src.style.setProperty('--owner', colorFor(b.author));
       if (mine) src.addEventListener('mousedown', (e) => onSrcMousedown(e, b));
       else src.title = 'owned by ' + b.author;
+      const content = document.createElement('div');
+      content.className = 'src-content';
+      src.appendChild(content);
+      // hover "＋" to insert a new line between this block and the next
+      const ins = document.createElement('div');
+      ins.className = 'insert-after';
+      ins.title = 'Insert a line here';
+      ins.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); insertBelow(b); });
+      src.appendChild(ins);
       b.srcEl = src;
+      b.srcContent = content;
       b.ta = null;
       renderSrc(b);
 
@@ -368,8 +386,8 @@
       const mine = b.owner_id === myOwnerId;
       if (mine && editingId === b.id) {
         b.srcEl.classList.add('editing');
-        b.srcEl.innerHTML = '<div class="code-edit"><div class="ln-col"></div><textarea spellcheck="true"></textarea></div>';
-        const ta = b.srcEl.querySelector('textarea');
+        b.srcContent.innerHTML = '<div class="code-edit"><div class="ln-col"></div><textarea spellcheck="true"></textarea></div>';
+        const ta = b.srcContent.querySelector('textarea');
         ta.value = b.content;
         b.ta = ta;
         ta.addEventListener('input', () => onMyInput(b));
@@ -381,8 +399,8 @@
         b.srcEl.classList.remove('editing');
         b.ta = null;
         const lines = (b.content || '').split('\n');
-        b.srcEl.innerHTML = lines.map(() => '<div class="code-line"><span class="num"></span><span class="lt"></span></div>').join('');
-        const lts = b.srcEl.querySelectorAll('.lt');
+        b.srcContent.innerHTML = lines.map(() => '<div class="code-line"><span class="num"></span><span class="lt"></span></div>').join('');
+        const lts = b.srcContent.querySelectorAll('.lt');
         lines.forEach((ln, i) => { lts[i].textContent = ln; });
       }
     }
@@ -390,7 +408,7 @@
     function syncLnCol(b) {
       if (!b.ta) return;
       const count = b.ta.value.split('\n').length || 1;
-      const col = b.srcEl.querySelector('.ln-col');
+      const col = b.srcContent.querySelector('.ln-col');
       while (col.children.length < count) { const s = document.createElement('span'); s.className = 'num'; col.appendChild(s); }
       while (col.children.length > count) col.removeChild(col.lastChild);
     }
@@ -465,7 +483,7 @@
       let caret = null;                        // place the caret at the clicked line
       const row = e.target.closest('.code-line');
       if (row) {
-        const idx = [...b.srcEl.querySelectorAll('.code-line')].indexOf(row);
+        const idx = [...b.srcContent.querySelectorAll('.code-line')].indexOf(row);
         if (idx >= 0) { const ls = (b.content || '').split('\n'); caret = ls.slice(0, idx).reduce((a, l) => a + l.length + 1, 0); }
       }
       startEdit(b, caret);

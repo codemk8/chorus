@@ -5,11 +5,17 @@ A full-stack, real-time collaborative discussion web app. Spin up shared
 per topic, built from author-owned **blocks** and rendered with inline
 [Mermaid](https://mermaid.js.org/) diagrams.
 
-No login. No build step. No submit button. Just a display name and a browser.
+No build step. No submit button. Just a browser — sign in, pick a display name,
+and start writing.
 
 ## Features
 
-- **No-login identity** — pick a display name on first visit; it's saved to
+- **Login by default** — the server requires a sign-in. Start it and it prints a
+  `admin` username and a random password to the console (or set your own with
+  `CHORUS_USER` / `CHORUS_PASSWORD`); run with `--no-auth` for an open, no-login
+  sandbox. Access is gated on both the REST API and the realtime socket via a
+  per-boot token.
+- **Display-name identity** — after signing in, pick a display name; it's saved to
   `localStorage` and attributes every block you add.
 - **Topics** — anyone can create one; they appear instantly in everyone's
   sidebar.
@@ -135,8 +141,36 @@ node server.js
 
 Then open **http://localhost:3000** in your browser.
 
-To try the real-time collaboration, open the URL in a second tab or browser,
-pick a different display name, and join the same topic.
+On startup the server prints the login it expects:
+
+```
+🔒 Login required — sign in with:
+     Username:  admin
+     Password:  9ygE-fV76-Jjn2
+```
+
+Enter those on the sign-in screen, then pick a display name. To try the real-time
+collaboration, open the URL in a second tab or browser, log in again, pick a
+different display name, and join the same topic.
+
+### Login & access control
+
+Login is **on by default**, gating both the REST API and the realtime socket.
+
+- **Set your own credentials** (recommended for anything real):
+  ```bash
+  CHORUS_USER=team CHORUS_PASSWORD='a-good-passphrase' node server.js
+  # or: node server.js --user=team --password='a-good-passphrase'
+  ```
+- **Auto-generated** — if you don't set a password, the server creates a random
+  one and prints it (username defaults to `admin`). It changes on every restart.
+- **Disable login** for an open sandbox: `node server.js --no-auth` (or
+  `CHORUS_NO_AUTH=1`). Anyone who can reach the URL can then read and write.
+
+How it works: the password is exchanged once (`POST /api/login`) for a random
+per-boot **token** that the browser stores in `localStorage` and presents on every
+request and socket connection. Restarting the server rotates the token, so everyone
+is signed out. There are no user accounts — it's a single shared login.
 
 ### Data & persistence
 
@@ -184,14 +218,20 @@ ngrok http 3000          # or: cloudflared tunnel --url http://localhost:3000
 ```
 
 > ⚠️ `--host=0.0.0.0` makes Chorus reachable by anyone who can hit your machine /
-> tunnel URL. There's no authentication — only expose it to people you trust.
+> tunnel URL. The default login gates access — set a strong `CHORUS_PASSWORD`
+> before exposing it, and only share the credentials with people you trust. (If
+> you run with `--no-auth`, there's nothing stopping anyone with the URL.)
 
 ## HTTP API
 
-Read-only JSON endpoints (all state changes happen over Socket.io):
+Read-only JSON endpoints (all state changes happen over Socket.io). When login is
+enabled (the default), the data endpoints require an `Authorization: Bearer <token>`
+header — get a token from `POST /api/login` with `{ "username", "password" }`.
 
 | Endpoint | Returns |
 | --- | --- |
+| `GET /api/auth` | Whether login is required: `{ required: true\|false }` (no auth needed) |
+| `POST /api/login` | `{ token }` for valid `{ username, password }`; `401` otherwise (no auth needed) |
 | `GET /api/topics` | All topics: `[{ id, title, created_at }]` |
 | `GET /api/topics/:id/blocks` | The topic's blocks in reading order: `[{ id, owner_id, author, content, position, created_at, updated_at }]` |
 | `GET /api/topics/:id/document` | The whole document in one shot (see below) |
@@ -239,11 +279,12 @@ Free-ish hosts:
 > **GitHub Pages can't host it** — Pages is static-only and Chorus needs a live
 > server. GitHub hosts the code; the demo runs on one of the above.
 
-**Demo guardrails** (already built in, tunable via env): per-socket rate limits on
+**Demo guardrails** (already built in, tunable via env): the default **login**
+(set `CHORUS_PASSWORD`, or `--no-auth` for an open demo), per-socket rate limits on
 all socket events, a 256 KB payload cap, `MAX_TOPICS` (default 300), and
-`MAX_BLOCKS_PER_TOPIC` (default 1000). There is still **no authentication or
-moderation** — anyone with the URL can post, so treat a public demo as an open,
-disposable sandbox.
+`MAX_BLOCKS_PER_TOPIC` (default 1000). There's a single shared login and **no
+per-user accounts or moderation**, so for a public demo either set a password you're
+willing to share or treat `--no-auth` as an open, disposable sandbox.
 
 ## Project structure
 

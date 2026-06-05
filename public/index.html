@@ -295,6 +295,7 @@
   .modal p { margin: 0 0 18px; text-align: center; color: var(--muted); font-size: 13px; }
   .modal input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 11px 13px; border-radius: 9px; font-size: 14px; outline: none; }
   .modal input:focus { border-color: var(--accent); }
+  .modal input + input { margin-top: 10px; }
   .modal .btn { width: 100%; margin-top: 14px; padding: 11px; font-size: 14px; }
   .modal .err { color: var(--danger); font-size: 12px; min-height: 16px; margin-top: 6px; text-align: center; }
 
@@ -307,6 +308,18 @@
 </style>
 </head>
 <body>
+  <div class="modal-overlay hidden" id="loginModal">
+    <div class="modal">
+      <div class="logo-big">🔒</div>
+      <h2>This Chorus is private</h2>
+      <p>Sign in to continue.</p>
+      <input id="loginUser" type="text" placeholder="Username (default: admin)" autocomplete="username" />
+      <input id="loginInput" type="password" placeholder="Password" autocomplete="current-password" />
+      <div class="err" id="loginErr"></div>
+      <button class="btn" id="loginSubmit">Unlock</button>
+    </div>
+  </div>
+
   <div class="modal-overlay hidden" id="nameModal">
     <div class="modal">
       <div class="logo-big">🎶</div>
@@ -435,6 +448,17 @@
     // ----- State -----
     const NAME_KEY = 'chorus:name';
     const OWNER_KEY = 'chorus:ownerId';
+    const TOKEN_KEY = 'chorus:token';
+    let authToken = localStorage.getItem(TOKEN_KEY) || '';   // present only when the server requires a login
+    // fetch() that carries the access token (and bounces to the login screen on 401).
+    async function apiFetch(url, opts) {
+      opts = Object.assign({}, opts);
+      opts.headers = Object.assign({}, opts.headers || {}, authToken ? { Authorization: 'Bearer ' + authToken } : {});
+      const res = await fetch(url, opts);
+      if (res.status === 401) { clearToken(); openLoginModal(); throw new Error('unauthorized'); }
+      return res;
+    }
+    function clearToken() { authToken = ''; localStorage.removeItem(TOKEN_KEY); }
     let myName = localStorage.getItem(NAME_KEY) || '';
     // Stable per-browser identity — ownership keys on this, NOT the display name,
     // so renames keep your blocks and same-named users don't collide.
@@ -464,6 +488,7 @@
     const el = (id) => document.getElementById(id);
     const dom = {
       nameModal: el('nameModal'), nameInput: el('nameInput'), nameErr: el('nameErr'), nameSubmit: el('nameSubmit'),
+      loginModal: el('loginModal'), loginUser: el('loginUser'), loginInput: el('loginInput'), loginErr: el('loginErr'), loginSubmit: el('loginSubmit'),
       brandSub: el('brandSub'),
       topicInput: el('topicInput'), topicCreate: el('topicCreate'), topicList: el('topicList'),
       placeholder: el('placeholder'), topicView: el('topicView'),
@@ -979,6 +1004,32 @@
     dom.nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitName(); });
 
     // ===================================================================
+    // Login (only shown when the server was started with a password)
+    // ===================================================================
+    function openLoginModal() {
+      dom.loginModal.classList.remove('hidden');
+      if (!dom.loginUser.value) dom.loginUser.value = 'admin';   // the default username
+      dom.loginInput.value = '';
+      dom.loginInput.focus();
+    }
+    function closeLoginModal() { dom.loginModal.classList.add('hidden'); }
+    async function submitLogin() {
+      dom.loginErr.textContent = '';
+      let res;
+      try {
+        res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: dom.loginUser.value.trim(), password: dom.loginInput.value }) });
+      } catch (_) { dom.loginErr.textContent = 'Network error — is the server running?'; return; }
+      if (!res.ok) { const j = await res.json().catch(() => ({})); dom.loginErr.textContent = j.error || 'Login failed.'; return; }
+      const j = await res.json();
+      authToken = j.token || '';
+      localStorage.setItem(TOKEN_KEY, authToken);
+      closeLoginModal();
+      startApp();
+    }
+    dom.loginSubmit.addEventListener('click', submitLogin);
+    dom.loginInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLogin(); });
+
+    // ===================================================================
     // Topics
     // ===================================================================
     function renderTopicList() {
@@ -1028,7 +1079,7 @@
     async function loadBlocks(id) {
       loadBuffer = [];                 // capture live block events that arrive during the fetch
       let list = [];
-      try { list = await (await fetch(`/api/topics/${id}/blocks`)).json(); } catch (e) { list = []; }
+      try { list = await (await apiFetch(`/api/topics/${id}/blocks`)).json(); } catch (e) { list = []; }
       if (id !== currentTopicId) return; // stale load — a newer load now owns loadBuffer
       resetDoc();
       const rows = Array.isArray(list) ? list : [];
@@ -1073,7 +1124,10 @@
     // ===================================================================
     // Socket.io
     // ===================================================================
-    const socket = io();
+    const socket = io({ autoConnect: false });   // connected by startApp() once auth (if any) is satisfied
+    socket.on('connect_error', (err) => {        // rejected handshake → token missing/stale → log in again
+      if (err && err.message === 'unauthorized') { clearToken(); socket.disconnect(); openLoginModal(); }
+    });
     socket.on('topic:created', (topic) => { if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); } });
     socket.on('block:update', (msg) => {   // someone is editing (no content)
       if (msg.topicId !== currentTopicId || msg.editor_id === myOwnerId) return;
@@ -1129,7 +1183,7 @@
     }
     async function exportMarkdown() {
       if (!currentTopicId) return;
-      let doc; try { doc = await (await fetch(`/api/topics/${currentTopicId}/document`)).json(); } catch (_) { return; }
+      let doc; try { doc = await (await apiFetch(`/api/topics/${currentTopicId}/document`)).json(); } catch (_) { return; }
       downloadBlob((doc && doc.markdown) || '', safeName(doc && doc.title) + '.md', 'text/markdown;charset=utf-8');
     }
     const PDF_CSS = `
@@ -1171,8 +1225,18 @@
     // ===================================================================
     async function boot() {
       applyTheme(localStorage.getItem(THEME_KEY) || 'dark', false);
+      // Does this server require a login? If so and we don't hold a token, gate first.
+      let required = false;
+      try { required = !!(await (await fetch('/api/auth')).json()).required; } catch (_) {}
+      if (required && !authToken) { openLoginModal(); return; }  // startApp() runs after a successful login
+      startApp();
+    }
+    // Connect the socket (with the token, if any) and load the topic list.
+    async function startApp() {
+      socket.auth = { token: authToken };
+      socket.connect();
       if (myName) dom.brandSub.textContent = 'you are ' + myName; else openNameModal();
-      try { topics = await (await fetch('/api/topics')).json(); } catch (e) { topics = []; }
+      try { topics = await (await apiFetch('/api/topics')).json(); } catch (e) { topics = []; }
       renderTopicList();
     }
     boot();

@@ -2,9 +2,63 @@
 
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 const Database = require('better-sqlite3');
+
+// ---------------------------------------------------------------------------
+// CLI helper: read `--flag value` and `--flag=value` from argv.
+// ---------------------------------------------------------------------------
+function cliArg(name) {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}` && args[i + 1] && !args[i + 1].startsWith('--')) return args[i + 1];
+    if (args[i].startsWith(`--${name}=`)) return args[i].slice(name.length + 3);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Access gate (login). ON by default. Provide your own credentials with
+// CHORUS_USER / CHORUS_PASSWORD (or --user / --password); otherwise a username
+// ('admin') and a random password are generated and printed to stdout on boot.
+// Turn auth off entirely with --no-auth (or CHORUS_NO_AUTH=1).
+// ---------------------------------------------------------------------------
+function genPassword() {
+  const cs = 'abcdefghijkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ'; // no ambiguous 0/O/1/l/I
+  const r = crypto.randomBytes(12);
+  let s = ''; for (let i = 0; i < 12; i++) s += cs[r[i] % cs.length];
+  return `${s.slice(0, 4)}-${s.slice(4, 8)}-${s.slice(8, 12)}`;
+}
+const AUTH_REQUIRED = !(process.env.CHORUS_NO_AUTH === '1' || process.argv.slice(2).includes('--no-auth'));
+const AUTH_USER = process.env.CHORUS_USER || cliArg('user') || 'admin';
+const AUTH_PW_GENERATED = AUTH_REQUIRED && !(process.env.CHORUS_PASSWORD || cliArg('password'));
+const AUTH_PASSWORD = !AUTH_REQUIRED ? '' : (process.env.CHORUS_PASSWORD || cliArg('password') || genPassword());
+// A fresh random token each boot; a client swaps the credentials for it once,
+// then presents it on every request and socket. Restarting logs everyone out.
+const AUTH_TOKEN = AUTH_REQUIRED ? crypto.randomBytes(32).toString('hex') : '';
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a)), bb = Buffer.from(String(b));
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+}
+function bearerToken(req) {
+  const h = req.headers['authorization'] || '';
+  return h.startsWith('Bearer ') ? h.slice(7) : '';
+}
+function requireAuth(req, res, next) {
+  if (!AUTH_REQUIRED || safeEqual(bearerToken(req), AUTH_TOKEN)) return next();
+  res.status(401).json({ error: 'Unauthorized' });
+}
+// Per-IP throttle so the password can't be brute-forced (10 tries / 5 min).
+const loginHits = new Map();
+function loginThrottle(ip) {
+  const now = Date.now();
+  let b = loginHits.get(ip);
+  if (!b || now - b.start >= 5 * 60 * 1000) { b = { start: now, count: 0 }; loginHits.set(ip, b); }
+  b.count += 1;
+  return b.count <= 10;
+}
 
 // ---------------------------------------------------------------------------
 // Database setup
@@ -127,13 +181,25 @@ app.use(express.static(path.join(__dirname, 'public'), {
   },
 }));
 
-// REST API — used to restore state on page load
-app.get('/api/topics', (req, res) => {
+// Auth: tell the client whether a login is needed, and trade the password for a token.
+app.get('/api/auth', (req, res) => res.json({ required: AUTH_REQUIRED }));
+app.post('/api/login', (req, res) => {
+  const ip = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+  if (!loginThrottle(ip)) return res.status(429).json({ error: 'Too many attempts — wait a few minutes.' });
+  if (!AUTH_REQUIRED) return res.json({ token: '' });
+  const u = (req.body && req.body.username) || '';
+  const p = (req.body && req.body.password) || '';
+  if (safeEqual(u, AUTH_USER) && safeEqual(p, AUTH_PASSWORD)) return res.json({ token: AUTH_TOKEN });
+  res.status(401).json({ error: 'Incorrect username or password.' });
+});
+
+// REST API — used to restore state on page load (gated by requireAuth when a password is set)
+app.get('/api/topics', requireAuth, (req, res) => {
   res.json(q.allTopics.all());
 });
 
 // The topic's shared playground — every block, in reading order.
-app.get('/api/topics/:id/blocks', (req, res) => {
+app.get('/api/topics/:id/blocks', requireAuth, (req, res) => {
   const topic = q.topicById.get(req.params.id);
   if (!topic) return res.status(404).json({ error: 'Topic not found' });
   res.json(q.blocksByTopic.all(req.params.id));
@@ -141,7 +207,7 @@ app.get('/api/topics/:id/blocks', (req, res) => {
 
 // The whole document, canonical shape: topic metadata + ordered owned blocks +
 // the assembled Markdown (blocks joined in reading order).
-app.get('/api/topics/:id/document', (req, res) => {
+app.get('/api/topics/:id/document', requireAuth, (req, res) => {
   const topic = q.topicById.get(req.params.id);
   if (!topic) return res.status(404).json({ error: 'Topic not found' });
   const blocks = q.blocksByTopic.all(req.params.id);
@@ -159,6 +225,14 @@ app.get('/api/topics/:id/document', (req, res) => {
 // ---------------------------------------------------------------------------
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 256 * 1024 }); // bound inbound payloads
+
+// Realtime auth: when a password is set, every socket must present the token.
+io.use((socket, next) => {
+  if (!AUTH_REQUIRED) return next();
+  const tok = (socket.handshake.auth && socket.handshake.auth.token) || '';
+  if (safeEqual(tok, AUTH_TOKEN)) return next();
+  next(new Error('unauthorized'));
+});
 
 const roomName = (topicId) => `topic:${topicId}`;
 
@@ -303,15 +377,6 @@ function publishPayload(topicId, row, editorId) {
 // ---------------------------------------------------------------------------
 // Config: read --host / --port from CLI args (and HOST / PORT env vars).
 // Supports both `--host=0.0.0.0` and `--host 0.0.0.0` forms.
-function cliArg(name) {
-  const args = process.argv.slice(2);
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === `--${name}` && args[i + 1] && !args[i + 1].startsWith('--')) return args[i + 1];
-    if (args[i].startsWith(`--${name}=`)) return args[i].slice(name.length + 3);
-  }
-  return null;
-}
-
 const PORT = cliArg('port') || process.env.PORT || 3000;
 // Default to localhost-only. Pass --host=0.0.0.0 to listen on all interfaces
 // (useful behind a tunnel like ngrok/cloudflared, or on a LAN).
@@ -335,6 +400,16 @@ server.listen(PORT, HOST, () => {
   const shown = HOST === '0.0.0.0' || HOST === '::' ? 'localhost' : HOST;
   console.log(`Chorus running on http://${shown}:${PORT}  (bound to ${HOST}:${PORT})`);
   console.log(`Data: ${DB_PATH}`);
+  if (AUTH_REQUIRED) {
+    console.log('────────────────────────────────────────');
+    console.log('🔒 Login required — sign in with:');
+    console.log(`     Username:  ${AUTH_USER}`);
+    console.log(`     Password:  ${AUTH_PASSWORD}`);
+    if (AUTH_PW_GENERATED) console.log('   (auto-generated — set CHORUS_USER / CHORUS_PASSWORD to choose your own, or --no-auth to disable login)');
+    console.log('────────────────────────────────────────');
+  } else {
+    console.log('🔓 No login (--no-auth) — anyone who can reach this URL can read & write.');
+  }
   if (HOST === '0.0.0.0' || HOST === '::') {
     console.log('Listening on all interfaces — reachable over your LAN / tunnel.');
   }

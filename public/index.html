@@ -61,6 +61,9 @@
 
   /* Split panes: source | rendered */
   .editor-wrap { flex: 1; display: flex; min-height: 0; }
+  /* Auto-save footnote — shown only while you're editing a block */
+  .autosave-bar { display: none; flex: none; padding: 5px 24px; font-size: 11.5px; color: var(--muted-2); border-top: 1px solid var(--border); background: var(--bg-alt); }
+  .autosave-bar.show { display: block; }
   .pane { display: flex; flex-direction: column; min-width: 0; flex: 1; }
   .pane.source { border-right: 1px solid var(--border); }
   .pane-label { font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; padding: 9px 18px; border-bottom: 1px solid var(--border); background: var(--bg-alt); display: flex; align-items: center; gap: 8px; }
@@ -229,6 +232,7 @@
             <div class="scroll" id="renderScroll"><div id="renderInner"></div></div>
           </div>
         </div>
+        <div class="autosave-bar" id="autosaveBar"></div>
       </div>
     </main>
   </div>
@@ -260,6 +264,10 @@
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
     let editingId = null;            // the block id I'm currently editing inline (one at a time)
 
+    // Periodic auto-save of the block being edited (draft persisted to the server).
+    const AUTOSAVE_MS = 5000;
+    let autoSaveDirty = false, autoSaveLast = 0, autoSaveNext = 0, autoSaveTimer = null, autoSaveTick = null;
+
     // A little fun: a random present-participle while someone edits a block.
     const VERBS = ['cooking', 'brewing', 'crafting', 'conjuring', 'noodling', 'tinkering',
       'sculpting', 'wrangling', 'simmering', 'percolating', 'forging', 'doodling',
@@ -274,6 +282,7 @@
       topicInput: el('topicInput'), topicCreate: el('topicCreate'), topicList: el('topicList'),
       placeholder: el('placeholder'), topicView: el('topicView'),
       topicTitle: el('topicTitle'), onlineList: el('onlineList'), editingLine: el('editingLine'),
+      autosaveBar: el('autosaveBar'),
       sourceScroll: el('sourceScroll'), sourceInner: el('sourceInner'),
       renderScroll: el('renderScroll'), renderInner: el('renderInner'),
     };
@@ -515,6 +524,7 @@
       editingId = b.id;
       b.state = 'editing';
       b.last_modified_by = myName;  // I'm now the editor
+      autoSaveLast = 0; autoSaveDirty = false;  // fresh edit session
       if (b.synced) rawEdit(b);     // existing block → peers see "<me> is modifying" now
       renderSrc(b);
       renumber();
@@ -522,6 +532,7 @@
       ta.focus();
       const pos = (caret == null) ? ta.value.length : Math.min(caret, ta.value.length);
       ta.setSelectionRange(pos, pos);
+      startAutoSave(b);
     }
     function onMyInput(b) {
       b.content = b.ta.value;
@@ -531,9 +542,12 @@
       syncLnCol(b);
       renumber();
       renderBlock(b);                          // I always see my own live render (with errors)
-      if (b.content.trim()) scheduleEdit(b);   // peers learn I'm cooking (no content sent)
+      autoSaveDirty = true;                    // a periodic timer persists the draft
+      if (!b.synced && b.content.trim()) rawEdit(b); // first keystroke: create block + peers see "modifying"
+      updateAutoSaveBar();
     }
     function onMyBlur(b) {
+      stopAutoSave();
       if (editingId === b.id) editingId = null;
       if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty blocks
       publishBlock(b);
@@ -582,21 +596,47 @@
     }
 
     // ----- Emit -----
-    // block:update (throttled) = "I'm editing this" — server stores my draft but
-    // withholds it from peers. block:publish = "render it now" with content.
+    // block:update = "I'm editing this" — server stores my draft but withholds it
+    // from peers. block:publish = "render it now" with content.
     const emitState = new Map();
     function rawEdit(b) {
-      const st = emitState.get(b.id) || { timer: null, last: 0 };
-      st.last = Date.now(); st.timer = null; emitState.set(b.id, st);
       if (!currentTopicId) return;
       socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
       b.synced = true;
+      autoSaveLast = Date.now(); autoSaveDirty = false;  // this IS a save
     }
-    function scheduleEdit(b) {
-      const st = emitState.get(b.id) || { timer: null, last: 0 }; emitState.set(b.id, st);
-      const wait = 120 - (Date.now() - st.last);
-      if (wait <= 0) rawEdit(b); else if (!st.timer) st.timer = setTimeout(() => rawEdit(b), wait);
+
+    // ----- Auto-save: persist the editing draft to the server every AUTOSAVE_MS,
+    // and show a footnote with the last/next save time. -----
+    function startAutoSave() {
+      stopAutoSave();
+      scheduleAutoSave();
+      autoSaveTick = setInterval(updateAutoSaveBar, 1000);
+      dom.autosaveBar.classList.add('show');
+      updateAutoSaveBar();
     }
+    function scheduleAutoSave() {
+      autoSaveNext = Date.now() + AUTOSAVE_MS;
+      autoSaveTimer = setTimeout(() => {
+        const b = editingId && blocks.get(editingId);
+        if (b && autoSaveDirty && b.content.trim()) rawEdit(b); // rawEdit clears the dirty flag
+        scheduleAutoSave();
+        updateAutoSaveBar();
+      }, AUTOSAVE_MS);
+    }
+    function stopAutoSave() {
+      if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+      if (autoSaveTick) { clearInterval(autoSaveTick); autoSaveTick = null; }
+      dom.autosaveBar.classList.remove('show');
+    }
+    function fmtClock(ts) { return ts ? new Date(ts).toLocaleTimeString() : '—'; }
+    function updateAutoSaveBar() {
+      if (!editingId) { stopAutoSave(); return; }
+      const inS = Math.max(0, Math.ceil((autoSaveNext - Date.now()) / 1000));
+      const status = autoSaveDirty ? '✎ Unsaved changes' : '✓ Draft saved';
+      dom.autosaveBar.textContent = `${status} · last saved ${fmtClock(autoSaveLast)} · next auto-save in ${inS}s`;
+    }
+
     function publishEmit(b) {
       const st = emitState.get(b.id); if (st && st.timer) { clearTimeout(st.timer); st.timer = null; }
       if (!currentTopicId) return;
@@ -684,7 +724,7 @@
     dom.topicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createTopic(); });
 
     function resetDoc() {
-      blocks.clear(); editingId = null;
+      blocks.clear(); editingId = null; stopAutoSave(); autoSaveLast = 0; autoSaveDirty = false;
       emitState.forEach((s) => s.timer && clearTimeout(s.timer)); emitState.clear();
       dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';
       renderPresence();

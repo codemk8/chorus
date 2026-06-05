@@ -57,6 +57,9 @@ No login. No build step. No submit button. Just a display name and a browser.
   and replayed** after the initial snapshot (no lost blocks), and updates are
   applied **monotonically by timestamp** so out-of-order delivery can't regress a
   block.
+- **Auto-saved drafts** — while you edit, the draft is persisted to the server on
+  a periodic cycle (every 5s) and a footnote at the bottom shows the last save time
+  and a countdown to the next. A disconnect mid-edit publishes your last saved draft.
 - **Persistent** — blocks are stored in SQLite (`better-sqlite3`) with a
   fractional `position` for ordering; the whole document is restored on page load.
 - **Clean dark, developer-friendly UI** — topics sidebar + a single shared

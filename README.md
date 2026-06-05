@@ -153,6 +153,9 @@ Enter those on the sign-in screen, then pick a display name. To try the real-tim
 collaboration, open the URL in a second tab or browser, log in again, pick a
 different display name, and join the same topic.
 
+Run the test suite with **`npm test`** (an end-to-end suite covering the HTTP API,
+auth, and the realtime layer).
+
 ### Login & access control
 
 Login is **on by default**, gating both the REST API and the realtime socket.
@@ -230,6 +233,7 @@ header — get a token from `POST /api/login` with `{ "username", "password" }`.
 
 | Endpoint | Returns |
 | --- | --- |
+| `GET /healthz` | Liveness/readiness probe: `{ ok: true, uptime }` (no auth needed) |
 | `GET /api/auth` | Whether login is required: `{ required: true\|false }` (no auth needed) |
 | `POST /api/login` | `{ token }` for valid `{ username, password }`; `401` otherwise (no auth needed) |
 | `GET /api/topics` | All topics: `[{ id, title, created_at }]` |
@@ -253,6 +257,45 @@ ordered owned blocks, and the assembled Markdown:
 
 The `markdown` field joins the blocks in order — handy for exporting or copying the
 whole topic as one Markdown file. Unknown topics return `404`.
+
+## Configuration
+
+Everything is configured through environment variables (see `.env.example`). On
+Node 20.6+ you can load a file with `node --env-file=.env server.js`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CHORUS_USER` | `admin` | Login username |
+| `CHORUS_PASSWORD` | _(random, printed on boot)_ | Login password |
+| `CHORUS_NO_AUTH` | _(unset)_ | Set to `1` to disable login (open sandbox) |
+| `PORT` | `3000` | Port to listen on (`--port` also works) |
+| `HOST` | `127.0.0.1` | Bind address; `0.0.0.0` for LAN/tunnel/container (`--host`) |
+| `TRUST_PROXY` | _(off)_ | Behind a proxy, set to `1`/hop-count/`true` so the rate-limiter sees the real client IP |
+| `CHORUS_DB` | `./chorus.db` | SQLite file path |
+| `MAX_TOPICS` | `300` | Cap on total topics |
+| `MAX_BLOCKS_PER_TOPIC` | `1000` | Cap on blocks per topic |
+
+## Running in production
+
+Chorus is a single long-lived Node process; run it under a supervisor (systemd,
+Docker, a PaaS) and put TLS in front of it. It's hardened for that:
+
+- **Auth on by default** — set a strong `CHORUS_PASSWORD`; the token gates both the
+  REST API and the WebSocket.
+- **Security headers** — `Content-Security-Policy` (locks scripts to self + the one
+  CDN), `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`; `x-powered-by`
+  is off and untrusted Mermaid diagrams render in `strict` mode (no script injection).
+- **Health probe** — `GET /healthz` for your load balancer / uptime check (the
+  Docker image wires up a `HEALTHCHECK`).
+- **Resilient** — every socket handler is sandboxed, unhandled errors are logged and
+  the DB is checkpointed before exit, and the WAL is folded into `chorus.db` every
+  15 s so a crash loses at most a few seconds.
+- **Behind a proxy** — set `TRUST_PROXY` so the login throttle keys on the real
+  client IP, and terminate TLS at the proxy (the token + login travel over it).
+- **Tests/CI** — `npm test` runs an end-to-end suite; CI runs it on Node 18/20/22.
+
+**Checklist:** set `CHORUS_PASSWORD` ·  put it behind HTTPS ·  set `TRUST_PROXY` if
+proxied ·  mount `CHORUS_DB` on a persistent volume ·  point monitoring at `/healthz`.
 
 ## Deploying a public demo
 
@@ -291,12 +334,16 @@ willing to share or treat `--no-auth` as an open, disposable sandbox.
 ```
 chorus/
 ├── package.json
-├── server.js          # All backend logic: Express + Socket.io + SQLite
-├── Dockerfile         # Container image for deploying a demo
+├── server.js              # All backend logic: Express + Socket.io + SQLite
+├── public/
+│   └── index.html         # Entire frontend: inline CSS + JS
+├── test/
+│   └── server.test.js     # End-to-end tests (node:test) — `npm test`
+├── .github/workflows/ci.yml  # CI: npm ci + npm test on Node 18/20/22
+├── .env.example           # Documented configuration
+├── Dockerfile             # Hardened container image (non-root + healthcheck)
 ├── README.md
-├── LICENSE
-└── public/
-    └── index.html     # Entire frontend: inline CSS + JS
+└── LICENSE
 ```
 
 ## License

@@ -24,6 +24,15 @@ Chorus is one Node process plus a SQLite file. **Login is on by default**: the s
 prints a username (`admin`) and a random password on startup. Set your own with
 `CHORUS_USER` / `CHORUS_PASSWORD`, or pass `--no-auth` for an open sandbox.
 
+### Deploy your own (Render, free)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/codemk8/chorus)
+
+One click spins up your own instance on Render's free tier (free `*.onrender.com`
+URL, sleeps when idle). The included [`render.yaml`](render.yaml) deploys it as an
+open demo (`--no-auth`); storage is ephemeral, so the database self-cleans on each
+restart. No domain or payment required.
+
 ### With Docker
 
 Pull the published image (built for `amd64` + `arm64` on every release):

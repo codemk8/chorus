@@ -1,0 +1,25 @@
+# Render Blueprint — one-click deploy of a throwaway Chorus demo on the free tier.
+# Spec: https://render.com/docs/blueprint-spec
+#
+# Free tier: a free *.onrender.com URL, sleeps when idle, and ephemeral storage —
+# so the database resets on restart/redeploy, which keeps a public demo self-cleaning.
+services:
+  - type: web
+    name: chorus
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      # Open demo: anyone with the URL can read & write. To require a login
+      # instead, drop this and set CHORUS_PASSWORD (and CHORUS_USER) below.
+      - key: CHORUS_NO_AUTH
+        value: "1"
+
+    # SQLite runs fine here — it's just a local file. The free tier's storage is
+    # ephemeral (DB resets on restart/redeploy), which keeps a demo self-cleaning.
+    # To make it persistent, switch `plan` to a paid instance and uncomment:
+    # disk:
+    #   name: data
+    #   mountPath: /data        # CHORUS_DB defaults to /data/chorus.db in the image
+    #   sizeGB: 1

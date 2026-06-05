@@ -8,10 +8,20 @@ per topic, built from author-owned **blocks** and rendered with inline
 No build step. No submit button. Just a browser — sign in, pick a display name,
 and start writing.
 
+![Chorus in action: Alice types a block on the left while Bob, on the right, sees an "alice is modifying…" overlay; the moment Alice publishes, her line renders for Bob — then Bob replies and Alice watches it appear](docs/demo.gif)
+
+> **Live, conflict-free collaboration.** Every block is owned by one person, so edits
+> never collide. Peers see _"…is modifying"_ while you write, and your block renders
+> for everyone the instant you publish (Shift+Enter).
+
+<details>
+<summary><b>A closer look</b> — Mermaid diagrams, syntax highlighting & per-author ownership colors</summary>
+
+<br>
+
 ![Chorus: a line-numbered Markdown editor on the left and the live rendered document on the right, with per-author colored ownership bars, a Mermaid flowchart, and syntax-highlighted Python](docs/hero.png)
 
-> Two people (alice 🔴 and bob 🟢) co-authoring one document — each block owned by
-> one person, rendered live with Mermaid diagrams and syntax highlighting.
+</details>
 
 ## Features
 

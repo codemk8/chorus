@@ -22,14 +22,15 @@ No login. No build step. No submit button. Just a display name and a browser.
 - **Continuous render + attribution chip** — the right pane reads as one Markdown
   document. Ownership shows as a colored left bar, with a small author + timestamp
   **chip at the end of each block**.
-- **EDITING / PUBLISHED state, "cooking" until published** — each block has an
-  authoritative `state` in the DB. While you write (`editing`), your in-progress
-  content is **never sent to peers** — they just see "**_<you> is cooking…_**"
-  (and so do late joiners loading the page). You compose freely (**Enter = newline**
-  inside the block) and **Shift+Enter publishes** it (`state → published`), which
-  is when everyone else finally renders it. You always see your own live render
-  (with real Markdown/Mermaid syntax errors). If you disconnect mid-edit, the
-  server publishes your draft so no one is stuck on "cooking".
+- **EDITING / PUBLISHED state with a "modifying" overlay** — each block has an
+  authoritative `state` in the DB. The moment you put your cursor on a block it's
+  `editing`, and peers see a spinner overlay — "**_<you> is modifying…_**" — over
+  that block (the last-published content stays visible underneath; your in-progress
+  text is **never sent to peers**). You compose freely (**Enter = newline** inside
+  the block) and **Shift+Enter publishes** (`state → published`), which is when
+  everyone else re-renders it. You always see your own live render (with real
+  Markdown/Mermaid syntax errors). If you disconnect mid-edit, the server publishes
+  your draft so no one is stuck behind the overlay.
 - **One shared document, owned by blocks** — the document is ordered paragraphs
   ("blocks"). While editing a line, press **Enter** to start a new line below (and
   jump to it), **Shift+Enter** for a line break within the line. **Enter inside a

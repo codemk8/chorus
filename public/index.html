@@ -105,7 +105,14 @@
   .rnd-meta { display: flex; align-items: center; gap: 6px; width: fit-content; margin: 3px 0 4px auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px 1px 3px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
   .rnd-meta .avatar { width: 15px; height: 15px; font-size: 8px; }
   .rnd-meta .m-name { font-weight: 600; color: var(--text); }
-  .lt.cooking { color: var(--accent); font-style: italic; }
+
+  /* "<author> is modifying" overlay on a peer's block while they edit it */
+  .block-overlay { position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center; gap: 9px; background: rgba(13,17,23,.66); backdrop-filter: blur(1.5px); color: var(--accent); font-size: 12px; font-style: italic; pointer-events: none; }
+  .rnd-block .block-overlay { border-radius: 0 6px 6px 0; }
+  .block-overlay.show { display: flex; }
+  .block-overlay .spin { width: 16px; height: 16px; }
+  .src-block.modifying { min-height: 28px; }
+  .rnd-block.modifying { min-height: 40px; }
 
   /* Spinner */
   .spin { width: 12px; height: 12px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: middle; }
@@ -321,7 +328,7 @@
     function renderPresence() {
       const names = [...new Set([...blocks.values()].filter(isCooking).map((b) => b.author))];
       if (!names.length) { dom.editingLine.innerHTML = ''; return; }
-      const label = names.length === 1 ? `${names[0]} is cooking…` : names.length === 2 ? `${names[0]} and ${names[1]} are cooking…` : `${names.length} people are cooking…`;
+      const label = names.length === 1 ? `${names[0]} is modifying…` : names.length === 2 ? `${names[0]} and ${names[1]} are modifying…` : `${names.length} people are modifying…`;
       dom.editingLine.innerHTML = '<span class="spin"></span>' + escapeText(label);
     }
 
@@ -345,8 +352,10 @@
       ins.title = 'Insert a line here';
       ins.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); insertBelow(b); });
       src.appendChild(ins);
+      const sov = makeOverlay(); src.appendChild(sov.el);
       b.srcEl = src;
       b.srcContent = content;
+      b.srcOverlay = sov.el; b.srcOverlayText = sov.text;
       b.ta = null;
       renderSrc(b);
 
@@ -359,10 +368,28 @@
           <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
           <span class="m-name"></span><span class="m-time"></span>
         </div>`;
+      const rov = makeOverlay(); rnd.appendChild(rov.el);
       b.renderEl = rnd;
       b.renderBody = rnd.querySelector('.rnd-body');
       b.renderName = rnd.querySelector('.m-name');
       b.renderTime = rnd.querySelector('.m-time');
+      b.renderOverlay = rov.el; b.renderOverlayText = rov.text;
+    }
+    function makeOverlay() {
+      const el = document.createElement('div');
+      el.className = 'block-overlay';
+      el.innerHTML = '<span class="spin"></span><span class="ov-text"></span>';
+      return { el, text: el.querySelector('.ov-text') };
+    }
+    // Show/hide the "<author> is modifying" overlay on a peer's block being edited.
+    function updateModifying(b) {
+      const on = isCooking(b); // peer && state === 'editing'
+      [b.srcEl, b.renderEl].forEach((el) => el && el.classList.toggle('modifying', on));
+      [[b.srcOverlay, b.srcOverlayText], [b.renderOverlay, b.renderOverlayText]].forEach(([ov, t]) => {
+        if (!ov) return;
+        ov.classList.toggle('show', on);
+        if (on && t) t.textContent = b.author + ' is modifying…';
+      });
     }
 
     // Fill a block's source slot: read-only line rows, or an inline textarea if
@@ -380,13 +407,9 @@
         ta.addEventListener('keydown', (e) => onBlockKeydown(e, b));
         syncLnCol(b);
         autoGrow(ta);
-      } else if (isCooking(b)) {
-        // A peer is writing this block — withhold content, show a cooking line.
-        b.srcEl.classList.remove('editing');
-        b.ta = null;
-        b.srcContent.innerHTML = '<div class="code-line"><span class="num"></span><span class="lt cooking"></span></div>';
-        b.srcContent.querySelector('.lt').textContent = '🍳 ' + b.author + ' is cooking…';
       } else {
+        // Read-only rows: my own settled block, or a peer's last-published content
+        // (the in-progress version is withheld; a "modifying" overlay covers it).
         b.srcEl.classList.remove('editing');
         b.ta = null;
         const lines = (b.content || '').split('\n');
@@ -422,14 +445,10 @@
       const mine = b.owner_id === myOwnerId;
       b.renderName.textContent = b.author + (mine ? ' (you)' : '');
       b.renderTime.textContent = ' · ' + fmtTime(b.updated_at);
-      // A peer still editing → general "<author> is cooking…" until they publish.
-      if (isCooking(b)) {
-        b.renderBody.innerHTML = '<div class="typing-note"><span class="spin"></span><span></span></div>';
-        b.renderBody.querySelector('span:last-child').textContent = '🍳 ' + b.author + ' is cooking…';
-        return;
-      }
-      // My own block renders live (with syntax errors); peers' published blocks render too.
+      // Render the content (mine live; peers' last-published). A peer mid-edit
+      // gets a "<author> is modifying" overlay on top instead of live partials.
       renderInto(b.renderBody, b.content);
+      updateModifying(b);
     }
 
     // "Add a line" affordances: a bottom row (always; also the empty state) that
@@ -484,6 +503,7 @@
       if (editingId && editingId !== b.id) { const prev = blocks.get(editingId); if (prev && prev.ta) prev.ta.blur(); }
       editingId = b.id;
       b.state = 'editing';
+      if (b.synced) rawEdit(b);   // cursor on an existing block → peers see "modifying" now
       renderSrc(b);
       renumber();
       const ta = b.ta;

@@ -469,13 +469,21 @@ server.listen(PORT, HOST, () => {
   }
 });
 
-// Flush the WAL into the main DB file and close cleanly on exit.
+// Graceful shutdown: stop accepting connections, close the sockets, fold the WAL
+// into the main DB file, then exit. A timeout guarantees we never hang on exit.
 let closing = false;
 function shutdown(code) {
   if (closing) return;
   closing = true;
-  try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (_) { /* ignore */ }
-  process.exit(code || 0);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (_) { /* ignore */ }
+    process.exit(code || 0);
+  };
+  try { io.close(finish); } catch (_) { finish(); }   // closes sockets + the HTTP server
+  setTimeout(finish, 3000).unref();                    // don't wait forever for a stuck connection
 }
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));

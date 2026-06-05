@@ -19,6 +19,14 @@ prints a username (`admin`) and a random password on startup. Set your own with
 
 ### With Docker
 
+Pull the published image (built for `amd64` + `arm64` on every release):
+
+```bash
+docker run -p 3000:3000 -v chorus-data:/data ghcr.io/codemk8/chorus:latest
+```
+
+…or build it yourself:
+
 ```bash
 docker build -t chorus .
 docker run -p 3000:3000 -v chorus-data:/data chorus
@@ -26,7 +34,7 @@ docker run -p 3000:3000 -v chorus-data:/data chorus
 
 Open **http://localhost:3000** and sign in with the credentials printed in the logs
 (`docker logs <container>`). Set your own with `-e CHORUS_USER=… -e CHORUS_PASSWORD=…`;
-the `/data` volume keeps the database across restarts. _(A prebuilt image is coming.)_
+the `/data` volume keeps the database across restarts.
 
 ### From source
 

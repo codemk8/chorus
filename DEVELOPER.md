@@ -281,9 +281,18 @@ and stores the DB at `CHORUS_DB=/data/chorus.db` (mount a volume at `/data` to k
 data across restarts).
 
 ```bash
+# published image (multi-arch, pushed on every release)
+docker run -p 3000:3000 -v chorus-data:/data ghcr.io/codemk8/chorus:latest
+
+# …or build it yourself
 docker build -t chorus .
 docker run -p 3000:3000 -v chorus-data:/data chorus
 ```
+
+A multi-arch image (`linux/amd64` + `linux/arm64`) is built and pushed to
+`ghcr.io/codemk8/chorus` whenever you publish a GitHub Release or push a `v*` tag —
+see [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml).
+Tags follow the release version (`1.2.3`, `1.2`) plus `latest`.
 
 Free-ish hosts:
 

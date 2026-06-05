@@ -39,14 +39,12 @@ No login. No build step. No submit button. Just a display name and a browser.
   You can also click the `＋` at the start (left edge) of any line to insert below;
   an empty topic shows a one-click **＋ Add a line** prompt. Lines left empty are
   dropped automatically.
-- **Zero edit collisions** — every block is editable only by its owner, so two
-  people can never touch the same text. The document stays merge-conflict-free
-  without any CRDT/OT machinery. Ownership keys on a **stable per-browser
-  `owner_id`** (saved in `localStorage`), not the display name — so renames keep
-  your blocks and two people with the same name can't edit each other's. The
-  server enforces it on every write.
-- **Clear ownership** — each block is color-coded by its author (matching
-  left-bar + avatar), with an author chip and a "you" badge on your own.
+- **Anyone can edit any block, with a soft lock** — **double-click** any block to
+  edit it. While you're editing, that block is locked: others see an overlay
+  ("_<you> is cooking…_", with a randomized fun verb) and can't grab it until you
+  publish. So there's only ever one editor per block at a time — collision-free in
+  practice, without a CRDT — and each block records **`last_modified_by`** (the
+  chip + color follow whoever last touched it).
 - **Robust live rendering** — incomplete Markdown/Mermaid never breaks the view:
   diagrams are pre-validated, last-good renders are cached to avoid flicker, and
   a **spinner** marks a block (and any half-written diagram) while it's being

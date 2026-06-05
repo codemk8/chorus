@@ -37,6 +37,7 @@ db.exec(`
     content    TEXT NOT NULL DEFAULT '',
     position   REAL NOT NULL,
     state      TEXT NOT NULL DEFAULT 'published',  -- 'editing' (being written) | 'published'
+    last_modified_by TEXT NOT NULL DEFAULT '',      -- display name of the last editor
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (topic_id) REFERENCES topics(id)
@@ -54,6 +55,10 @@ if (!blockCols.includes('owner_id')) {
 if (!blockCols.includes('state')) {
   db.exec("ALTER TABLE blocks ADD COLUMN state TEXT NOT NULL DEFAULT 'published'");
 }
+if (!blockCols.includes('last_modified_by')) {
+  db.exec("ALTER TABLE blocks ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''");
+  db.exec('UPDATE blocks SET last_modified_by = author WHERE last_modified_by = \'\'');
+}
 // On boot, nothing is mid-edit — any leftover 'editing' rows are stale.
 db.exec("UPDATE blocks SET state = 'published' WHERE state = 'editing'");
 
@@ -68,10 +73,10 @@ const q = {
   ),
   blockById: db.prepare('SELECT * FROM blocks WHERE id = ?'),
   insertBlock: db.prepare(
-    'INSERT INTO blocks (id, topic_id, owner_id, author, content, position, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO blocks (id, topic_id, owner_id, author, content, position, state, last_modified_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ),
-  // author can change (rename) on edit; ownership (owner_id) never does.
-  updateBlock: db.prepare('UPDATE blocks SET content = ?, author = ?, state = ?, updated_at = ? WHERE id = ?'),
+  // Anyone may edit; we record who last touched it. The creator (author/owner_id) is kept as-is.
+  updateBlock: db.prepare('UPDATE blocks SET content = ?, state = ?, last_modified_by = ?, updated_at = ? WHERE id = ?'),
   deleteBlock: db.prepare('DELETE FROM blocks WHERE id = ?'),
   countTopics: db.prepare('SELECT COUNT(*) AS n FROM topics'),
   countBlocksInTopic: db.prepare('SELECT COUNT(*) AS n FROM blocks WHERE topic_id = ?'),
@@ -85,27 +90,26 @@ const LIMITS = {
   maxTitle: 120,
 };
 
-// Insert-or-update a block, enforcing ownership by the stable owner_id (not the
-// display name). Returns the saved row, or null if the write was rejected
-// (someone tried to edit a block they don't own).
-function saveBlock({ id, topicId, ownerId, author, content, position, state }) {
+// Insert-or-update a block. ANYONE may edit any block; `editor` is the display
+// name of whoever is making this change (recorded as last_modified_by). Returns
+// the saved row (or null if the per-topic block cap is hit on insert).
+function saveBlock({ id, topicId, ownerId, editor, content, position, state }) {
   const now = new Date().toISOString();
   const st = state === 'editing' ? 'editing' : 'published';
   const existing = q.blockById.get(id);
   if (existing) {
-    if (existing.owner_id !== ownerId) return null; // only the owner may edit
-    q.updateBlock.run(content, author, st, now, id);
+    q.updateBlock.run(content, st, editor, now, id);
   } else {
     if (q.countBlocksInTopic.get(topicId).n >= LIMITS.maxBlocksPerTopic) return null; // cap reached
-    q.insertBlock.run(id, topicId, ownerId, author, content, Number(position) || 0, st, now, now);
+    q.insertBlock.run(id, topicId, ownerId, editor, content, Number(position) || 0, st, editor, now, now);
   }
   return q.blockById.get(id);
 }
 
-// Delete a block, but only if `ownerId` owns it. Returns true if removed.
-function removeBlock(id, ownerId) {
+// Delete a block — anyone may. Returns true if removed.
+function removeBlock(id) {
   const existing = q.blockById.get(id);
-  if (!existing || existing.owner_id !== ownerId) return false;
+  if (!existing) return false;
   q.deleteBlock.run(id);
   return true;
 }
@@ -210,68 +214,65 @@ io.on('connection', (socket) => {
     io.emit('topic:created', topic);
   });
 
-  // A participant is EDITING one of their own blocks (state = 'editing'). Persist
-  // the in-progress content for durability, but DON'T relay the content — peers
-  // only learn that the block is being written, so they can't show it yet.
+  // EDITING a block (anyone may edit any block). Persist the in-progress content
+  // for durability but DON'T relay it — peers only learn who's modifying it, and
+  // can't grab a block someone else is actively editing.
   socket.on('block:update', ({ topicId, id, ownerId, author, content, position }) => {
-    const owner = String(ownerId || '').trim();
-    const who = String(author || '').trim();
+    const editorId = String(ownerId || '').trim(); // who is editing (stable id)
+    const editor = String(author || '').trim();     // editor's display name
     const blockId = String(id || '').trim();
-    if (!topicId || !owner || !blockId) return;
+    if (!topicId || !editor || !blockId) return;
     if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return;
     const body = String(content == null ? '' : content).slice(0, LIMITS.maxContent);
 
-    const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: owner, author: who, content: body, position, state: 'editing' });
-    if (!row) return; // rejected (not the owner)
+    const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'editing' });
+    if (!row) return;
     (socket.data.editing || (socket.data.editing = new Map())).set(blockId, Number(topicId));
     socket.to(roomName(topicId)).emit('block:update', {
       topicId: Number(topicId),
       id: row.id,
-      owner_id: row.owner_id,
-      author: row.author,
+      editor_id: editorId,
+      last_modified_by: row.last_modified_by,
       position: row.position,
       updated_at: row.updated_at,
-      state: 'editing', // peers show "<author> is cooking…" — content withheld until published
+      state: 'editing', // peers show "<editor> is modifying…" — content withheld
     });
   });
 
-  // PUBLISH: the author finished the block (Shift+Enter / moved off). Now relay
-  // the content so everyone renders it.
+  // PUBLISH: the editor finished (Shift+Enter / moved off). Relay the content.
   socket.on('block:publish', ({ topicId, id, ownerId, author, content, position }) => {
-    const owner = String(ownerId || '').trim();
-    const who = String(author || '').trim();
+    const editorId = String(ownerId || '').trim();
+    const editor = String(author || '').trim();
     const blockId = String(id || '').trim();
-    if (!topicId || !owner || !blockId) return;
+    if (!topicId || !editor || !blockId) return;
     if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return;
     const body = String(content == null ? '' : content).slice(0, LIMITS.maxContent);
 
-    const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: owner, author: who, content: body, position, state: 'published' });
+    const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'published' });
     if (!row) return;
     if (socket.data.editing) socket.data.editing.delete(blockId);
-    broadcastPublish(socket, Number(topicId), row);
+    socket.to(roomName(topicId)).emit('block:publish', publishPayload(topicId, row, editorId));
   });
 
-  // A participant deleted one of their own blocks.
-  socket.on('block:delete', ({ topicId, id, ownerId }) => {
-    const owner = String(ownerId || '').trim();
+  // Delete a block — anyone may.
+  socket.on('block:delete', ({ topicId, id }) => {
     const blockId = String(id || '').trim();
-    if (!topicId || !owner || !blockId) return;
+    if (!topicId || !blockId) return;
     if (!rateLimit(socket, 'blockDelete', 30, 5000)) return;
-    if (removeBlock(blockId, owner)) {
+    if (removeBlock(blockId)) {
       if (socket.data.editing) socket.data.editing.delete(blockId);
       socket.to(roomName(topicId)).emit('block:delete', { topicId: Number(topicId), id: blockId });
     }
   });
 
   socket.on('disconnect', async () => {
-    // Publish anything this socket left mid-edit, so peers stop seeing "cooking"
-    // and get the last content instead of being stuck.
+    // Publish anything this socket left mid-edit so peers stop seeing the overlay.
     if (socket.data.editing) {
       for (const [blockId, topicId] of socket.data.editing) {
         const existing = q.blockById.get(blockId);
         if (existing && existing.state === 'editing') {
-          const row = saveBlock({ id: blockId, topicId, ownerId: existing.owner_id, author: existing.author, content: existing.content, position: existing.position, state: 'published' });
-          if (row) io.to(roomName(topicId)).emit('block:publish', publishPayload(topicId, row));
+          const row = saveBlock({ id: blockId, topicId, ownerId: existing.owner_id, editor: existing.last_modified_by, content: existing.content, position: existing.position, state: 'published' });
+          if (row) io.to(roomName(topicId)).emit('block:publish', publishPayload(topicId, row, ''));
         }
       }
     }
@@ -280,20 +281,17 @@ io.on('connection', (socket) => {
   });
 });
 
-function publishPayload(topicId, row) {
+function publishPayload(topicId, row, editorId) {
   return {
     topicId: Number(topicId),
     id: row.id,
-    owner_id: row.owner_id,
-    author: row.author,
+    editor_id: editorId || '',
+    last_modified_by: row.last_modified_by,
     content: row.content,
     position: row.position,
     updated_at: row.updated_at,
     state: 'published',
   };
-}
-function broadcastPublish(socket, topicId, row) {
-  socket.to(roomName(topicId)).emit('block:publish', publishPayload(topicId, row));
 }
 
 // ---------------------------------------------------------------------------

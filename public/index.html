@@ -72,15 +72,12 @@
   /* Left pane: ONE continuous, line-numbered code editor.
      Your own blocks are click-to-edit inline; others' lines are read-only. */
   #sourceScroll { padding: 8px 0 60px; }
-  .src-block { position: relative; border-left: 2px solid var(--owner, transparent); }
-  .src-block.mine { cursor: text; }
-  .src-block.mine:hover { background: rgba(88,166,255,.05); }
+  .src-block { position: relative; border-left: 2px solid var(--owner, transparent); cursor: text; }
+  .src-block:hover { background: rgba(88,166,255,.045); }
   .src-block.editing { background: rgba(88,166,255,.07); }
   .code-line { display: flex; min-height: 21px; }
   .num { flex: none; width: 52px; box-sizing: border-box; text-align: right; padding: 0 12px 0 8px; color: var(--muted-2); user-select: none; font-family: var(--mono); font-size: 12px; line-height: 21px; }
-  .src-block.mine .num { color: var(--accent); opacity: .7; }
   .lt { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 13px; line-height: 21px; padding: 0 16px 0 0; color: var(--text); }
-  .src-block:not(.mine) .lt { color: var(--muted); }
   .new-line { cursor: text; }
   .new-line .lt.placeholder { color: var(--muted-2); font-style: italic; }
   .new-line:hover .num, .new-line:hover .lt.placeholder, .new-line:hover .add-mark { color: var(--accent); }
@@ -263,6 +260,13 @@
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
     let editingId = null;            // the block id I'm currently editing inline (one at a time)
 
+    // A little fun: a random present-participle while someone edits a block.
+    const VERBS = ['cooking', 'brewing', 'crafting', 'conjuring', 'noodling', 'tinkering',
+      'sculpting', 'wrangling', 'simmering', 'percolating', 'forging', 'doodling',
+      'composing', 'marinating', 'whisking', 'remixing', 'finessing', 'plotting',
+      'scheming', 'mulling', 'baking', 'spinning', 'weaving', 'channeling'];
+    function randomVerb() { return VERBS[Math.floor(Math.random() * VERBS.length)]; }
+
     const el = (id) => document.getElementById(id);
     const dom = {
       nameModal: el('nameModal'), nameInput: el('nameInput'), nameErr: el('nameErr'), nameSubmit: el('nameSubmit'),
@@ -321,29 +325,31 @@
       }
     }
 
-    // ----- Cooking state -----
+    // ----- Editing state -----
     // A block's `state` ('editing' | 'published') is authoritative (it lives in
-    // the DB). A peer's block in 'editing' is shown only as "<author> is cooking…"
-    // (content withheld) until they publish (Shift+Enter / move off the line).
-    function isCooking(b) { return b.owner_id !== myOwnerId && b.state === 'editing'; }
+    // the DB). A block someone else is editing is shown only as a "modifying"
+    // overlay (content withheld) until they publish. (isLocked is defined below.)
     function renderPresence() {
-      const names = [...new Set([...blocks.values()].filter(isCooking).map((b) => b.author))];
+      const locked = [...blocks.values()].filter(isLocked);
+      const names = [...new Set(locked.map(lmb))];
       if (!names.length) { dom.editingLine.innerHTML = ''; return; }
-      const label = names.length === 1 ? `${names[0]} is modifying…` : names.length === 2 ? `${names[0]} and ${names[1]} are modifying…` : `${names.length} people are modifying…`;
+      const label = names.length === 1 ? `${names[0]} is ${locked[0].verb || 'modifying'}…`
+        : names.length === 2 ? `${names[0]} and ${names[1]} are busy…` : `${names.length} people are busy…`;
       dom.editingLine.innerHTML = '<span class="spin"></span>' + escapeText(label);
     }
 
+    // Who's shown as the block's author = whoever last modified it.
+    function lmb(b) { return b.last_modified_by || b.author || '?'; }
+    // A block is locked when SOMEONE ELSE is editing it (I can't grab it then).
+    function isLocked(b) { return b.state === 'editing' && editingId !== b.id; }
+
     // ----- Block elements (source + render) -----
     function makeBlock(b) {
-      const mine = b.owner_id === myOwnerId;
-
-      // --- Source (left): a slot in the unified code editor ---
+      // --- Source (left): a slot in the unified code editor. ANY block is editable. ---
       const src = document.createElement('div');
-      src.className = 'src-block' + (mine ? ' mine' : '');
+      src.className = 'src-block';
       src.dataset.id = b.id;
-      src.style.setProperty('--owner', colorFor(b.author));
-      if (mine) src.addEventListener('dblclick', (e) => onSrcDblClick(e, b));
-      else src.title = 'owned by ' + b.author;
+      src.addEventListener('dblclick', (e) => onSrcDblClick(e, b));
       const content = document.createElement('div');
       content.className = 'src-content';
       src.appendChild(content);
@@ -360,19 +366,18 @@
       b.ta = null;
       renderSrc(b);
 
-      // --- Rendered (right): continuous markdown; author/time chip at the END ---
+      // --- Rendered (right): continuous markdown; last-editor chip floated top-right ---
       const rnd = document.createElement('div');
-      rnd.className = 'rnd-block' + (mine ? ' mine' : '');
+      rnd.className = 'rnd-block';
       rnd.dataset.id = b.id;
-      rnd.style.setProperty('--owner', colorFor(b.author));
       rnd.innerHTML = `<div class="rnd-meta">
-          <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
-          <span class="m-name"></span><span class="m-time"></span>
+          <span class="avatar"></span><span class="m-name"></span><span class="m-time"></span>
         </div><div class="md rnd-body"></div>`;
       const rov = makeOverlay(); rnd.appendChild(rov.el);
-      if (mine) rnd.addEventListener('dblclick', () => { if (editingId !== b.id) { startEdit(b, null); b.srcEl.scrollIntoView({ block: 'nearest' }); } });
+      rnd.addEventListener('dblclick', () => { if (editingId !== b.id && !isLocked(b)) { startEdit(b, null); b.srcEl.scrollIntoView({ block: 'nearest' }); } });
       b.renderEl = rnd;
       b.renderBody = rnd.querySelector('.rnd-body');
+      b.renderAvatar = rnd.querySelector('.avatar');
       b.renderName = rnd.querySelector('.m-name');
       b.renderTime = rnd.querySelector('.m-time');
       b.renderOverlay = rov.el; b.renderOverlayText = rov.text;
@@ -383,22 +388,21 @@
       el.innerHTML = '<span class="spin"></span><span class="ov-text"></span>';
       return { el, text: el.querySelector('.ov-text') };
     }
-    // Show/hide the "<author> is modifying" overlay on a peer's block being edited.
+    // Show/hide the "<editor> is modifying" overlay when someone else holds the block.
     function updateModifying(b) {
-      const on = isCooking(b); // peer && state === 'editing'
+      const on = isLocked(b);
       [b.srcEl, b.renderEl].forEach((el) => el && el.classList.toggle('modifying', on));
       [[b.srcOverlay, b.srcOverlayText], [b.renderOverlay, b.renderOverlayText]].forEach(([ov, t]) => {
         if (!ov) return;
         ov.classList.toggle('show', on);
-        if (on && t) t.textContent = b.author + ' is modifying…';
+        if (on && t) t.textContent = lmb(b) + ' is ' + (b.verb || 'modifying') + '…';
       });
     }
 
-    // Fill a block's source slot: read-only line rows, or an inline textarea if
-    // it's mine and being edited. Line numbers are assigned globally by renumber().
+    // Fill a block's source slot: an inline textarea if I'm editing it, else
+    // read-only line rows. Line numbers are assigned globally by renumber().
     function renderSrc(b) {
-      const mine = b.owner_id === myOwnerId;
-      if (mine && editingId === b.id) {
+      if (editingId === b.id) {
         b.srcEl.classList.add('editing');
         b.srcContent.innerHTML = '<div class="code-edit"><div class="ln-col"></div><textarea spellcheck="true"></textarea></div>';
         const ta = b.srcContent.querySelector('textarea');
@@ -444,11 +448,16 @@
       renumber();
     }
     function renderBlock(b) {
-      const mine = b.owner_id === myOwnerId;
-      b.renderName.textContent = b.author + (mine ? ' (you)' : '');
+      // Attribution = whoever last modified the block (updates as editors change).
+      const who = lmb(b);
+      const color = colorFor(who);
+      b.srcEl.style.setProperty('--owner', color);
+      b.renderEl.style.setProperty('--owner', color);
+      b.renderAvatar.style.background = color;
+      b.renderAvatar.textContent = initials(who);
+      b.renderName.textContent = who + (who === myName ? ' (you)' : '');
       b.renderTime.textContent = ' · ' + fmtTime(b.updated_at);
-      // Render the content (mine live; peers' last-published). A peer mid-edit
-      // gets a "<author> is modifying" overlay on top instead of live partials.
+      // Render content; a block someone ELSE is editing gets a "modifying" overlay.
       renderInto(b.renderBody, b.content);
       updateModifying(b);
     }
@@ -489,9 +498,10 @@
       ensureAffordances();
     }
 
-    // ----- Editing my own blocks (double-click a block to edit it inline) -----
+    // ----- Editing (double-click any block to edit it inline) -----
     function onSrcDblClick(e, b) {
       if (editingId === b.id) return;          // already editing → let the textarea handle it
+      if (isLocked(b)) return;                 // someone else is modifying it → can't grab it
       let caret = null;                        // place the caret at the double-clicked line
       const row = e.target.closest('.code-line');
       if (row) {
@@ -504,7 +514,8 @@
       if (editingId && editingId !== b.id) { const prev = blocks.get(editingId); if (prev && prev.ta) prev.ta.blur(); }
       editingId = b.id;
       b.state = 'editing';
-      if (b.synced) rawEdit(b);   // cursor on an existing block → peers see "modifying" now
+      b.last_modified_by = myName;  // I'm now the editor
+      if (b.synced) rawEdit(b);     // existing block → peers see "<me> is modifying" now
       renderSrc(b);
       renumber();
       const ta = b.ta;
@@ -560,7 +571,7 @@
       createMineAt(minPos - 1);
     }
     function createMineAt(position) {
-      const b = { id: newId(), owner_id: myOwnerId, author: myName, content: '', position, updated_at: nowISO(), synced: false, state: 'editing' };
+      const b = { id: newId(), owner_id: myOwnerId, author: myName, last_modified_by: myName, content: '', position, updated_at: nowISO(), synced: false, state: 'editing' };
       blocks.set(b.id, b);
       makeBlock(b);
       placeBlock(b);
@@ -601,13 +612,16 @@
       let b = blocks.get(msg.id);
       // Monotonic by updated_at: never apply an event older than what we have.
       if (b && b.updated_at && msg.updated_at && msg.updated_at < b.updated_at) return;
+      const wasEditing = b && b.state === 'editing';
       if (!b) {
-        b = { id: msg.id, owner_id: msg.owner_id, author: msg.author, content: published ? msg.content : '', position: msg.position, updated_at: msg.updated_at, synced: true, state: published ? 'published' : 'editing' };
+        b = { id: msg.id, last_modified_by: msg.last_modified_by, author: msg.last_modified_by, content: published ? msg.content : '', position: msg.position, updated_at: msg.updated_at, synced: true, state: published ? 'published' : 'editing', verb: published ? null : randomVerb() };
         blocks.set(b.id, b);
         makeBlock(b);
         placeBlock(b);
       } else {
-        b.updated_at = msg.updated_at; b.position = msg.position; b.author = msg.author;
+        b.updated_at = msg.updated_at; b.position = msg.position; b.last_modified_by = msg.last_modified_by;
+        // Pick a fresh verb each time a block (re)enters someone's edit; keep it steady mid-edit.
+        if (published) b.verb = null; else if (!wasEditing || !b.verb) b.verb = randomVerb();
         b.state = published ? 'published' : 'editing';
         if (published) b.content = msg.content;   // editing notices carry no content
         renderSrc(b);
@@ -698,11 +712,10 @@
       resetDoc();
       const rows = Array.isArray(list) ? list : [];
       rows.forEach((row) => {
-        // A peer's block still in 'editing' (e.g. they're mid-write) is mine? no →
-        // show "cooking" and withhold content; my own loads as published content.
-        const mine = row.owner_id === myOwnerId;
-        const state = (!mine && row.state === 'editing') ? 'editing' : 'published';
-        const b = { id: row.id, owner_id: row.owner_id, author: row.author, content: (state === 'editing') ? '' : row.content, position: row.position, updated_at: row.updated_at, synced: true, state };
+        // Any block still 'editing' on load is held by someone else (my own drafts
+        // were auto-published when my previous session ended) → withhold content.
+        const state = row.state === 'editing' ? 'editing' : 'published';
+        const b = { id: row.id, owner_id: row.owner_id, author: row.author, last_modified_by: row.last_modified_by, content: (state === 'editing') ? '' : row.content, position: row.position, updated_at: row.updated_at, synced: true, state };
         blocks.set(b.id, b);
         makeBlock(b);
         dom.sourceInner.appendChild(b.srcEl);
@@ -741,13 +754,13 @@
     // ===================================================================
     const socket = io();
     socket.on('topic:created', (topic) => { if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); } });
-    socket.on('block:update', (msg) => {   // a peer is editing (no content)
-      if (msg.topicId !== currentTopicId || msg.owner_id === myOwnerId) return;
+    socket.on('block:update', (msg) => {   // someone is editing (no content)
+      if (msg.topicId !== currentTopicId || msg.editor_id === myOwnerId) return;
       if (loadBuffer) { loadBuffer.push({ type: 'edit', msg }); return; } // mid-load → queue
       applyRemoteBlock(msg, false);
     });
-    socket.on('block:publish', (msg) => {  // a peer published (with content)
-      if (msg.topicId !== currentTopicId || msg.owner_id === myOwnerId) return;
+    socket.on('block:publish', (msg) => {  // someone published (with content)
+      if (msg.topicId !== currentTopicId || msg.editor_id === myOwnerId) return;
       if (loadBuffer) { loadBuffer.push({ type: 'publish', msg }); return; } // mid-load → queue
       applyRemoteBlock(msg, true);
     });

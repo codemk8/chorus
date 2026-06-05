@@ -219,7 +219,7 @@
         <div class="toolbar">
           <span class="editing-line" id="editingLine"></span>
           <span class="spacer"></span>
-          <span class="hint-line">Click to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · clear a block to delete it</span>
+          <span class="hint-line">Double-click a block to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · clear a block to delete it</span>
         </div>
 
         <div class="editor-wrap">
@@ -342,7 +342,7 @@
       src.className = 'src-block' + (mine ? ' mine' : '');
       src.dataset.id = b.id;
       src.style.setProperty('--owner', colorFor(b.author));
-      if (mine) src.addEventListener('mousedown', (e) => onSrcMousedown(e, b));
+      if (mine) src.addEventListener('dblclick', (e) => onSrcDblClick(e, b));
       else src.title = 'owned by ' + b.author;
       const content = document.createElement('div');
       content.className = 'src-content';
@@ -370,6 +370,7 @@
           <span class="m-name"></span><span class="m-time"></span>
         </div><div class="md rnd-body"></div>`;
       const rov = makeOverlay(); rnd.appendChild(rov.el);
+      if (mine) rnd.addEventListener('dblclick', () => { if (editingId !== b.id) { startEdit(b, null); b.srcEl.scrollIntoView({ block: 'nearest' }); } });
       b.renderEl = rnd;
       b.renderBody = rnd.querySelector('.rnd-body');
       b.renderName = rnd.querySelector('.m-name');
@@ -488,11 +489,10 @@
       ensureAffordances();
     }
 
-    // ----- Editing my own blocks (click a line to edit it inline) -----
-    function onSrcMousedown(e, b) {
-      if (editingId === b.id) return;          // already editing → let the textarea handle the click
-      e.preventDefault();                      // we'll focus the textarea ourselves
-      let caret = null;                        // place the caret at the clicked line
+    // ----- Editing my own blocks (double-click a block to edit it inline) -----
+    function onSrcDblClick(e, b) {
+      if (editingId === b.id) return;          // already editing → let the textarea handle it
+      let caret = null;                        // place the caret at the double-clicked line
       const row = e.target.closest('.code-line');
       if (row) {
         const idx = [...b.srcContent.querySelectorAll('.code-line')].indexOf(row);

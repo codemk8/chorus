@@ -1008,9 +1008,8 @@
     // ===================================================================
     function openLoginModal() {
       dom.loginModal.classList.remove('hidden');
-      if (!dom.loginUser.value) dom.loginUser.value = 'admin';   // the default username
       dom.loginInput.value = '';
-      dom.loginInput.focus();
+      dom.loginUser.focus();
     }
     function closeLoginModal() { dom.loginModal.classList.add('hidden'); }
     async function submitLogin() {

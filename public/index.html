@@ -108,10 +108,12 @@
   .rnd-meta .m-name { font-weight: 600; color: var(--text); }
 
   /* "<author> is modifying" overlay on a peer's block while they edit it */
-  .block-overlay { position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center; gap: 9px; background: rgba(13,17,23,.66); backdrop-filter: blur(1.5px); color: var(--accent); font-size: 12px; font-style: italic; pointer-events: none; }
+  /* Light backdrop so the old content stays visible; the label sits in a pill. */
+  .block-overlay { position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center; background: rgba(13,17,23,.28); pointer-events: none; }
   .rnd-block .block-overlay { border-radius: 0 6px 6px 0; }
   .block-overlay.show { display: flex; }
-  .block-overlay .spin { width: 16px; height: 16px; }
+  .ov-pill { display: inline-flex; align-items: center; gap: 8px; background: rgba(13,17,23,.9); border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 13px 4px 9px; color: var(--accent); font-size: 12px; font-style: italic; box-shadow: 0 4px 16px rgba(0,0,0,.55); }
+  .block-overlay .spin { width: 15px; height: 15px; }
   .src-block.modifying { min-height: 28px; }
   .rnd-block.modifying { min-height: 40px; }
 
@@ -175,7 +177,7 @@
 </style>
 </head>
 <body>
-  <div class="modal-overlay" id="nameModal">
+  <div class="modal-overlay hidden" id="nameModal">
     <div class="modal">
       <div class="logo-big">🎶</div>
       <h2>Welcome to Chorus</h2>
@@ -266,7 +268,7 @@
 
     // Periodic auto-save of the block being edited (draft persisted to the server).
     const AUTOSAVE_MS = 5000;
-    let autoSaveDirty = false, autoSaveLast = 0, autoSaveNext = 0, autoSaveTimer = null, autoSaveTick = null;
+    let autoSaveDirty = false, autoSaveLast = 0, autoSaveNext = 0, autoSaveTimer = null, autoSaveTick = null, myEditVerb = '';
 
     // A little fun: a random present-participle while someone edits a block.
     const VERBS = ['cooking', 'brewing', 'crafting', 'conjuring', 'noodling', 'tinkering',
@@ -394,7 +396,7 @@
     function makeOverlay() {
       const el = document.createElement('div');
       el.className = 'block-overlay';
-      el.innerHTML = '<span class="spin"></span><span class="ov-text"></span>';
+      el.innerHTML = '<span class="ov-pill"><span class="spin"></span><span class="ov-text"></span></span>';
       return { el, text: el.querySelector('.ov-text') };
     }
     // Show/hide the "<editor> is modifying" overlay when someone else holds the block.
@@ -610,6 +612,7 @@
     // and show a footnote with the last/next save time. -----
     function startAutoSave() {
       stopAutoSave();
+      myEditVerb = randomVerb();   // your own fun verb for this edit session
       scheduleAutoSave();
       autoSaveTick = setInterval(updateAutoSaveBar, 1000);
       dom.autosaveBar.classList.add('show');
@@ -633,8 +636,10 @@
     function updateAutoSaveBar() {
       if (!editingId) { stopAutoSave(); return; }
       const inS = Math.max(0, Math.ceil((autoSaveNext - Date.now()) / 1000));
-      const status = autoSaveDirty ? '✎ Unsaved changes' : '✓ Draft saved';
-      dom.autosaveBar.textContent = `${status} · last saved ${fmtClock(autoSaveLast)} · next auto-save in ${inS}s`;
+      const verb = myEditVerb ? myEditVerb[0].toUpperCase() + myEditVerb.slice(1) : 'Editing';
+      const saved = autoSaveLast ? `last saved ${fmtClock(autoSaveLast)}` : 'not saved yet';
+      const dot = autoSaveDirty ? '·' : '✓';
+      dom.autosaveBar.textContent = `🍳 ${verb}… ${dot} ${saved} · next auto-save in ${inS}s`;
     }
 
     function publishEmit(b) {
@@ -658,6 +663,7 @@
         blocks.set(b.id, b);
         makeBlock(b);
         placeBlock(b);
+        ensureAffordances();   // clears the empty-state hint when a live block arrives
       } else {
         b.updated_at = msg.updated_at; b.position = msg.position; b.last_modified_by = msg.last_modified_by;
         // Pick a fresh verb each time a block (re)enters someone's edit; keep it steady mid-edit.

@@ -9,6 +9,11 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
 
+# Run the JS-based actions on Node 24 (they still ship Node 20, which is being
+# deprecated on GitHub-hosted runners).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   docker:
     runs-on: ubuntu-latest

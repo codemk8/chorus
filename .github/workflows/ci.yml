@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Run the JS-based actions (checkout, setup-node) on Node 24 instead of the
+# soon-to-be-removed Node 20.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -129,10 +129,12 @@ different port keeps all your data. The server prints the exact path on boot
   ```bash
   CHORUS_DB=/tmp/scratch.db node server.js
   ```
-- `Ctrl+C` shuts down cleanly (checkpoints the write-ahead log into `chorus.db`).
-- To back up, just copy `chorus.db`. To reset, delete it while the server is
-  **stopped** (deleting it while running orphans the live data and you'll get a
-  fresh, empty DB on the next start).
+- Writes go to a write-ahead log (`chorus.db-wal`) first; the server folds it
+  back into `chorus.db` **every ~15s** and again on a clean `Ctrl+C`, so the main
+  file is always current — even a hard `kill -9` loses at most a few seconds.
+- To back up, just copy `chorus.db` (kept current by the periodic checkpoint). To
+  reset, delete it while the server is **stopped** (deleting it while running
+  orphans the live data and you'll get a fresh, empty DB on the next start).
 
 ### Host & port options
 

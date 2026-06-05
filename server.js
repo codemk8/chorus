@@ -344,3 +344,14 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+// Keep the main chorus.db current instead of letting all data pile up in the
+// write-ahead log: fold the WAL back into the .db file on a timer. PASSIVE never
+// blocks live writers, so this is cheap. The payoff: even a hard `kill -9` (no
+// clean shutdown) or a plain `cp chorus.db` backup is at most a few seconds
+// behind — your data never lives *only* in the .wal file for long.
+const checkpointTimer = setInterval(() => {
+  if (closing) return;
+  try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) { /* ignore */ }
+}, 15000);
+checkpointTimer.unref(); // never keep the process alive just to checkpoint

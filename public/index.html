@@ -196,6 +196,18 @@
   .md code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); padding: 2px 6px; border-radius: 5px; }
   .md pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: .6em 0; }
   .md pre code { background: none; padding: 0; font-size: 12.5px; }
+  /* highlight.js tokens, themed via our CSS variables so every preset adapts. */
+  .hljs { color: var(--text); background: transparent; }
+  .hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag, .hljs-meta, .hljs-meta .hljs-keyword { color: var(--accent); }
+  .hljs-string, .hljs-regexp, .hljs-symbol, .hljs-char.escape_, .hljs-addition { color: var(--green); }
+  .hljs-number, .hljs-bullet, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--amber); }
+  .hljs-title, .hljs-title.function_, .hljs-name, .hljs-selector-id, .hljs-selector-class, .hljs-section { color: var(--accent-2); font-weight: 600; }
+  .hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_, .hljs-type, .hljs-tag { color: var(--amber); }
+  .hljs-params { color: var(--text); }
+  .hljs-deletion { color: var(--danger); }
+  .hljs-link { color: var(--accent); text-decoration: underline; }
+  .hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 700; }
   .md table { border-collapse: collapse; margin: .6em 0; display: block; overflow-x: auto; }
   .md th, .md td { border: 1px solid var(--border); padding: 6px 11px; }
   .md th { background: var(--bg-alt); }
@@ -306,11 +318,27 @@
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
   <script>
   (function () {
     'use strict';
 
-    const md = window.markdownit({ html: false, linkify: true, breaks: true, typographer: true });
+    const md = window.markdownit({
+      html: false, linkify: true, breaks: true, typographer: true,
+      // Syntax-highlight fenced code via highlight.js. Mermaid fences return ''
+      // so markdown-it wraps them normally and the diagram post-processor takes over.
+      highlight: function (str, lang) {
+        if (lang === 'mermaid') return '';
+        const hl = window.hljs;
+        if (hl && lang && hl.getLanguage(lang)) {
+          try {
+            return '<pre class="hljs"><code class="hljs language-' + lang + '">' +
+              hl.highlight(str, { language: lang, ignoreIllegals: true }).value + '</code></pre>';
+          } catch (_) { /* fall through */ }
+        }
+        return ''; // no/unknown language → markdown-it escapes & wraps it plainly
+      },
+    });
     mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', suppressErrorRendering: true });
     let mermaidSeq = 0;
     const mermaidCache = new Map();

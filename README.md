@@ -57,6 +57,10 @@ No login. No build step. No submit button. Just a display name and a browser.
   diagrams are pre-validated, last-good renders are cached to avoid flicker, and
   a **spinner** marks a block (and any half-written diagram) while it's being
   worked on — no error flashes mid-edit.
+- **Syntax highlighting** — fenced code blocks (` ```python `, ` ```bash `, …) are
+  highlighted with [highlight.js](https://highlightjs.org/), themed via the same
+  CSS variables so every color theme is covered. ` ```mermaid ` fences still render
+  as diagrams, not code.
 - **Presence** — a per-topic online-users list plus a live "_X is editing…_"
   indicator and per-block working spinners.
 - **Real-time sync via Socket.io** — `topic:created`, `user:join`,
@@ -113,7 +117,7 @@ discussions, design docs, and shared scratchpads; not a Google-Docs replacement.
 | Backend   | Node.js · Express · Socket.io                   |
 | Database  | SQLite via `better-sqlite3`                      |
 | Frontend  | Vanilla JS in a single HTML file (inline CSS/JS) |
-| Markdown  | `markdown-it` + `mermaid.js` (loaded via CDN)    |
+| Markdown  | `markdown-it` + `highlight.js` + `mermaid.js` (via CDN) |
 
 ## Setup
 

@@ -77,9 +77,12 @@ No login. No build step. No submit button. Just a display name and a browser.
 - **Export** — a top-right **Export** menu downloads the topic as a raw
   **`.md`** file (the canonical server-assembled Markdown) or opens a clean,
   light **print-to-PDF** view of the rendered document (diagrams included).
-- **Themes** — a top-right dropdown switches between preset color themes
-  (**GitHub Dark/Light, Dracula, Nord, Solarized**); the choice is saved to
-  `localStorage` and Mermaid diagrams re-render to match.
+- **Themes** — a top-right dropdown switches between **17 preset color themes**
+  grouped by Dark / Light (GitHub Dark · Dimmed · Light, Dracula, Nord, One Dark,
+  Monokai, Tokyo Night, Catppuccin Mocha · Latte, Gruvbox Dark · Light, Rosé Pine,
+  Solarized Dark · Light, Synthwave '84, Ayu Mirage). Every theme is just a set of
+  CSS variables, so the whole UI — including code highlighting — recolors instantly;
+  the choice is saved to `localStorage` and Mermaid diagrams re-render to match.
 - **Clean, developer-friendly UI** — topics sidebar + a single shared block
   document, in your theme of choice.
 

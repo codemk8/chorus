@@ -282,7 +282,7 @@
         <div class="toolbar">
           <span class="editing-line" id="editingLine"></span>
           <span class="spacer"></span>
-          <span class="hint-line">Double-click to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · click away keeps a draft · clear to delete</span>
+          <span class="hint-line">Double-click to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · <code>Esc</code> = step back a checkpoint · click away keeps a draft</span>
         </div>
 
         <div class="editor-wrap">
@@ -327,6 +327,8 @@
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
     let editingId = null;            // the block id I'm currently editing inline (one at a time)
     let committing = false;          // true while publishBlock() re-renders, so the textarea-removal blur is ignored
+    let editStack = [];              // checkpoint snapshots of the editing block (one per auto-save, de-duped)
+    let editBaseKind = 'published';  // what the block was before this edit session: 'new' | 'draft' | 'published'
 
     // Periodic auto-save of the block being edited (draft persisted to the server).
     const AUTOSAVE_MS = 5000;
@@ -588,6 +590,9 @@
     }
     function startEdit(b, caret) {
       if (editingId && editingId !== b.id) { const prev = blocks.get(editingId); if (prev && prev.ta) prev.ta.blur(); }
+      // Remember where this edit began so Esc can step back (and the final Esc can cancel).
+      editBaseKind = !b.synced ? 'new' : (b.draftByMe ? 'draft' : 'published');
+      editStack = [b.content];
       editingId = b.id;
       b.state = 'editing';
       b.draftByMe = true;           // it's my unpublished draft until I hit Shift+Enter
@@ -643,11 +648,63 @@
     }
     // Enter = newline in the block. Shift+Enter = the one explicit "publish".
     function onBlockKeydown(e, b) {
+      if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); escRevert(b); return; }
       if (e.key !== 'Enter' || !e.shiftKey || e.isComposing) return;
       e.preventDefault();
       if (!b.content.trim()) return;
       publishBlock(b);                         // publish this block…
       insertBelow(b);                          // …and continue in a fresh block below
+    }
+    // Esc steps back one checkpoint at a time: first it drops edits made since the
+    // last auto-save, then walks back through saved snapshots, and a final Esc at
+    // the starting point cancels the edit entirely.
+    function escRevert(b) {
+      const cur = b.ta ? b.ta.value : b.content;
+      if (editStack.length && cur !== editStack[editStack.length - 1]) {
+        restoreContent(b, editStack[editStack.length - 1]);   // discard unsaved typing
+      } else if (editStack.length > 1) {
+        editStack.pop();
+        restoreContent(b, editStack[editStack.length - 1]);   // back one checkpoint
+      } else {
+        cancelEdit(b);                                        // at the start → cancel
+      }
+    }
+    function restoreContent(b, content) {
+      b.content = content;
+      b.updated_at = nowISO();
+      if (b.ta) { b.ta.value = content; autoGrow(b.ta); b.ta.focus(); const n = content.length; b.ta.setSelectionRange(n, n); }
+      syncLnCol(b);
+      renumber();
+      renderBlock(b);
+      autoSaveDirty = true;            // persist the reverted text on the next save / blur / publish
+      updateAutoSaveBar();
+    }
+    // Final Esc: leave edit mode and return the block to its pre-edit state.
+    function cancelEdit(b) {
+      committing = true;              // suppress the blur from swapping the textarea out
+      stopAutoSave();
+      if (editingId === b.id) editingId = null;
+      const baseline = editStack.length ? editStack[0] : '';
+      if (editBaseKind === 'new') {   // never published → discard it
+        if (b.synced) emitDelete(b);
+        removeLocal(b.id);
+        committing = false;
+        return;
+      }
+      b.content = baseline;
+      if (editBaseKind === 'draft') { // was my unpublished draft → keep it a draft
+        b.draftByMe = true;
+        b.state = 'editing';
+        rawEdit(b);
+      } else {                        // was published → restore & re-publish (clears peers' overlay)
+        b.draftByMe = false;
+        b.state = 'published';
+        publishEmit(b);
+      }
+      renderSrc(b);
+      renumber();
+      renderBlock(b);
+      committing = false;
     }
 
     function insertBelow(ref) {
@@ -687,6 +744,10 @@
       socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
       b.synced = true;
       autoSaveLast = Date.now(); autoSaveDirty = false;  // this IS a save
+      if (editingId === b.id) pushSnapshot(b.content);   // each save is an Esc-able checkpoint
+    }
+    function pushSnapshot(c) {
+      if (!editStack.length || editStack[editStack.length - 1] !== c) editStack.push(c);
     }
 
     // ----- Auto-save: persist the editing draft to the server every AUTOSAVE_MS,
@@ -720,7 +781,8 @@
       const verb = myEditVerb ? myEditVerb[0].toUpperCase() + myEditVerb.slice(1) : 'Editing';
       const saved = autoSaveLast ? `last saved ${fmtClock(autoSaveLast)}` : 'not saved yet';
       const dot = autoSaveDirty ? '·' : '✓';
-      dom.autosaveBar.textContent = `🍳 ${verb}… ${dot} ${saved} · next auto-save in ${inS}s`;
+      const cp = editStack.length > 1 ? ` · ${editStack.length} checkpoints · Esc steps back` : ' · Esc to cancel';
+      dom.autosaveBar.textContent = `🍳 ${verb}… ${dot} ${saved} · next auto-save in ${inS}s${cp}`;
     }
 
     function publishEmit(b) {

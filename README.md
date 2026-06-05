@@ -32,9 +32,14 @@ No login. No build step. No submit button. Just a display name and a browser.
   everyone else re-renders it. **Switching focus never publishes** — click away or
   tab out and the block stays a saved **draft** (marked with a dashed amber border
   and a `draft ⇧⏎` hint), so you can't broadcast half-written content by accident.
-  Publishing is always a deliberate Shift+Enter. You always see your own live render
-  (with real Markdown/Mermaid syntax errors). If you disconnect mid-edit, the server
-  publishes your draft so no one is stuck behind the overlay.
+  Publishing is always a deliberate Shift+Enter. While editing, **`Esc` steps back
+  one checkpoint at a time** — the draft is snapshotted at every auto-save (de-duped),
+  so the first `Esc` drops edits made since the last save, each further `Esc` walks
+  back through the saved snapshots, and a final `Esc` at the starting point cancels
+  the edit (reverting an existing block to its last-published text, or removing a
+  brand-new one). You always see your own live render (with real Markdown/Mermaid
+  syntax errors). If you disconnect mid-edit, the server publishes your draft so no
+  one is stuck behind the overlay.
 - **One shared document, owned by blocks** — the document is ordered paragraphs
   ("blocks"). While editing a line, press **Enter** to start a new line below (and
   jump to it), **Shift+Enter** for a line break within the line. **Enter inside a

@@ -72,7 +72,7 @@
   .topic-header { padding: 16px 24px; padding-right: 240px; border-bottom: 1px solid var(--border); background: var(--bg-alt); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .topic-header h2 { margin: 0; font-size: 18px; font-weight: 700; }
   .topic-header .sub-line { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
-  .online { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-start; margin-top: 8px; }
+  .online { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
 
   /* Top-right controls: theme switcher + export */
   #topControls { position: fixed; top: 10px; right: 14px; z-index: 60; display: flex; align-items: center; gap: 8px; }
@@ -100,8 +100,9 @@
   /* Split panes: source | rendered */
   .editor-wrap { flex: 1; display: flex; min-height: 0; }
   /* Auto-save footnote — shown only while you're editing a block */
-  .autosave-bar { display: none; flex: none; padding: 5px 24px; font-size: 11.5px; color: var(--muted-2); border-top: 1px solid var(--border); background: var(--bg-alt); }
-  .autosave-bar.show { display: block; }
+  .status-row { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin-top: 8px; }
+  .autosave-bar { display: inline-flex; align-items: center; font-size: 11px; color: var(--muted-2); padding: 2px 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; transition: color .2s ease, border-color .2s ease; }
+  .autosave-bar.saved { color: var(--green); border-color: var(--green); }
   .pane { display: flex; flex-direction: column; min-width: 0; flex: 1; }
   .pane.source { border-right: 1px solid var(--border); }
   .pane-label { font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; padding: 9px 18px; border-bottom: 1px solid var(--border); background: var(--bg-alt); display: flex; align-items: center; gap: 8px; }
@@ -275,7 +276,10 @@
           <div>
             <h2 id="topicTitle"></h2>
             <div class="sub-line">Source on the left, live render on the right · each line is owned by its author</div>
-            <div class="online"><span class="label">Online</span><span id="onlineList"></span></div>
+            <div class="status-row">
+              <div class="online"><span class="label">Online</span><span id="onlineList"></span></div>
+              <div class="autosave-bar" id="autosaveBar"></div>
+            </div>
           </div>
         </header>
 
@@ -295,7 +299,6 @@
             <div class="scroll" id="renderScroll"><div id="renderInner"></div></div>
           </div>
         </div>
-        <div class="autosave-bar" id="autosaveBar"></div>
       </div>
     </main>
   </div>
@@ -333,6 +336,7 @@
     // Periodic auto-save of the block being edited (draft persisted to the server).
     const AUTOSAVE_MS = 5000;
     let autoSaveDirty = false, autoSaveLast = 0, autoSaveNext = 0, autoSaveTimer = null, autoSaveTick = null, myEditVerb = '';
+    let lastPersistAt = 0;           // last time anything was persisted (survives edit-session resets) — for the idle "saved" time
 
     // A little fun: a random present-participle while someone edits a block.
     const VERBS = ['cooking', 'brewing', 'crafting', 'conjuring', 'noodling', 'tinkering',
@@ -623,7 +627,7 @@
       if (committing) return;                 // publishBlock is re-rendering this block — not a real focus loss
       stopAutoSave();
       if (editingId === b.id) editingId = null;
-      if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty blocks
+      if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); updateAutoSaveBar(); return; } // drop empty blocks
       // Losing focus must NEVER publish — a stray click or tab-switch would
       // otherwise broadcast half-written content. Keep it as an unpublished
       // draft (state stays 'editing'); only Shift+Enter publishes.
@@ -632,6 +636,7 @@
       renderSrc(b);                               // textarea → read-only rows (your draft)
       renumber();
       renderBlock(b);
+      updateAutoSaveBar();                        // → "all changes saved"
     }
     // Publish a block so peers render it. The ONLY publish path (Shift+Enter).
     function publishBlock(b) {
@@ -645,6 +650,7 @@
       renumber();
       renderBlock(b);
       committing = false;
+      updateAutoSaveBar();                     // → "all changes saved"
     }
     // Enter = newline in the block. Shift+Enter = the one explicit "publish".
     function onBlockKeydown(e, b) {
@@ -689,6 +695,7 @@
         if (b.synced) emitDelete(b);
         removeLocal(b.id);
         committing = false;
+        updateAutoSaveBar();
         return;
       }
       b.content = baseline;
@@ -705,6 +712,7 @@
       renumber();
       renderBlock(b);
       committing = false;
+      updateAutoSaveBar();
     }
 
     function insertBelow(ref) {
@@ -743,7 +751,7 @@
       if (!currentTopicId) return;
       socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
       b.synced = true;
-      autoSaveLast = Date.now(); autoSaveDirty = false;  // this IS a save
+      autoSaveLast = Date.now(); lastPersistAt = autoSaveLast; autoSaveDirty = false;  // this IS a save
       if (editingId === b.id) pushSnapshot(b.content);   // each save is an Esc-able checkpoint
     }
     function pushSnapshot(c) {
@@ -757,7 +765,6 @@
       myEditVerb = randomVerb();   // your own fun verb for this edit session
       scheduleAutoSave();
       autoSaveTick = setInterval(updateAutoSaveBar, 1000);
-      dom.autosaveBar.classList.add('show');
       updateAutoSaveBar();
     }
     function scheduleAutoSave() {
@@ -772,17 +779,23 @@
     function stopAutoSave() {
       if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
       if (autoSaveTick) { clearInterval(autoSaveTick); autoSaveTick = null; }
-      dom.autosaveBar.classList.remove('show');
     }
     function fmtClock(ts) { return ts ? new Date(ts).toLocaleTimeString() : '—'; }
+    // Always shown in the header, so the user is continuously reassured their work
+    // is persisted: a steady "all changes saved" when idle, live status while editing.
     function updateAutoSaveBar() {
-      if (!editingId) { stopAutoSave(); return; }
+      const bar = dom.autosaveBar;
+      if (!editingId) {
+        bar.classList.add('saved');
+        bar.textContent = lastPersistAt ? `✓ All changes saved · ${fmtClock(lastPersistAt)}` : '✓ All changes saved';
+        return;
+      }
       const inS = Math.max(0, Math.ceil((autoSaveNext - Date.now()) / 1000));
       const verb = myEditVerb ? myEditVerb[0].toUpperCase() + myEditVerb.slice(1) : 'Editing';
-      const saved = autoSaveLast ? `last saved ${fmtClock(autoSaveLast)}` : 'not saved yet';
-      const dot = autoSaveDirty ? '·' : '✓';
+      const saved = autoSaveLast ? `saved ${fmtClock(autoSaveLast)}` : 'not saved yet';
       const cp = editStack.length > 1 ? ` · ${editStack.length} checkpoints · Esc steps back` : ' · Esc to cancel';
-      dom.autosaveBar.textContent = `🍳 ${verb}… ${dot} ${saved} · next auto-save in ${inS}s${cp}`;
+      bar.classList.toggle('saved', !autoSaveDirty);
+      bar.textContent = `🍳 ${verb}… ${autoSaveDirty ? '·' : '✓'} ${saved} · next save in ${inS}s${cp}`;
     }
 
     function publishEmit(b) {
@@ -790,6 +803,7 @@
       if (!currentTopicId) return;
       socket.emit('block:publish', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
       b.synced = true;
+      autoSaveLast = Date.now(); lastPersistAt = autoSaveLast;
     }
     function emitDelete(b) { const st = emitState.get(b.id); if (st && st.timer) clearTimeout(st.timer); emitState.delete(b.id); if (currentTopicId) socket.emit('block:delete', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId }); }
 
@@ -889,6 +903,7 @@
       dom.exportWrap.classList.remove('hidden');   // export is available once a topic is open
       dom.topicTitle.textContent = topic ? topic.title : 'Topic';
       dom.onlineList.innerHTML = '';
+      updateAutoSaveBar();                         // show the steady "all changes saved" state
       joinTopicRoom();
       loadBlocks(id);
     }

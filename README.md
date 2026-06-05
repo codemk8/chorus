@@ -19,15 +19,17 @@ No login. No build step. No submit button. Just a display name and a browser.
   inline**, press **Enter** for a new line, **Shift+Enter** for a line break, and
   clear a line to delete it. You can only edit lines you own; everyone else's are
   read-only. The right pane is the rendered, attributed result for the whole topic.
-- **Continuous render + hover attribution** — the right pane reads as one
-  Markdown document (no inline name/timestamp headers). Ownership shows as a
-  colored left bar; the author + timestamp appear on **hover** over a block.
-- **"Cooking" while others edit** — while you're editing a line, **you** see your
-  own live render, and any invalid Markdown/Mermaid surfaces the **actual syntax
-  error** so you can fix it. **Others** don't see your half-written work — that
-  line just shows "**_<you> is cooking…_**" (the whole time you're in it, pauses
-  included) until you finish and commit (hit Enter / move off), when it renders
-  for everyone.
+- **Continuous render + attribution chip** — the right pane reads as one Markdown
+  document. Ownership shows as a colored left bar, with a small author + timestamp
+  **chip at the end of each block**.
+- **EDITING / PUBLISHED state, "cooking" until published** — each block has an
+  authoritative `state` in the DB. While you write (`editing`), your in-progress
+  content is **never sent to peers** — they just see "**_<you> is cooking…_**"
+  (and so do late joiners loading the page). You compose freely (**Enter = newline**
+  inside the block) and **Shift+Enter publishes** it (`state → published`), which
+  is when everyone else finally renders it. You always see your own live render
+  (with real Markdown/Mermaid syntax errors). If you disconnect mid-edit, the
+  server publishes your draft so no one is stuck on "cooking".
 - **One shared document, owned by blocks** — the document is ordered paragraphs
   ("blocks"). While editing a line, press **Enter** to start a new line below (and
   jump to it), **Shift+Enter** for a line break within the line. **Enter inside a

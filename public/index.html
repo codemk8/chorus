@@ -100,12 +100,12 @@
 
   /* Rendered blocks (right): ONE continuous document. Owner shown only as a
      colored left bar; name + timestamp appear on hover (no inline headers). */
-  .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 3px 18px; }
-  .rnd-block:hover { background: rgba(255,255,255,.012); }
-  .rnd-meta { position: absolute; top: 5px; right: 12px; z-index: 4; display: none; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 999px; padding: 2px 11px 2px 4px; font-size: 11px; color: var(--muted); box-shadow: 0 6px 18px rgba(0,0,0,.45); white-space: nowrap; }
-  .rnd-block:hover .rnd-meta { display: inline-flex; }
-  .rnd-meta .avatar { width: 16px; height: 16px; font-size: 8px; }
+  .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 4px 18px 2px; }
+  /* Attribution chip, always shown at the END of each block */
+  .rnd-meta { display: flex; align-items: center; gap: 6px; width: fit-content; margin: 3px 0 4px auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px 1px 3px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+  .rnd-meta .avatar { width: 15px; height: 15px; font-size: 8px; }
   .rnd-meta .m-name { font-weight: 600; color: var(--text); }
+  .lt.cooking { color: var(--accent); font-style: italic; }
 
   /* Spinner */
   .spin { width: 12px; height: 12px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: middle; }
@@ -211,7 +211,7 @@
         <div class="toolbar">
           <span class="editing-line" id="editingLine"></span>
           <span class="spacer"></span>
-          <span class="hint-line">Click a line number to edit · <code>Enter</code> = new line · <code>Shift+Enter</code> = line break · clear a line to delete it</span>
+          <span class="hint-line">Click to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · clear a block to delete it</span>
         </div>
 
         <div class="editor-wrap">
@@ -252,10 +252,8 @@
     let topics = [];
     let currentTopicId = null;
     const blocks = new Map();        // id -> block { id, owner_id, author, content, position, ..., srcEl, ta, renderEl, renderBody, renderTime }
-    const peerTyping = new Map();    // blockId -> { author, timer }  (someone else is typing this block)
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
     let editingId = null;            // the block id I'm currently editing inline (one at a time)
-    let cookingTimer = null;         // heartbeat that keeps peers' "is cooking…" alive while I edit
 
     const el = (id) => document.getElementById(id);
     const dom = {
@@ -315,25 +313,13 @@
       }
     }
 
-    // ----- Peer-typing state: while a peer edits a block, others see only
-    // "<author> is typing…" instead of the half-written render. -----
-    function setPeerTyping(b) {
-      const e = peerTyping.get(b.id);
-      if (e && e.timer) clearTimeout(e.timer);
-      // Safety net: if heartbeats stop (peer disconnected without committing),
-      // render their last content. Must exceed the 2s edit heartbeat.
-      const timer = setTimeout(() => { peerTyping.delete(b.id); renderBlock(b); renderPresence(); }, 5000);
-      peerTyping.set(b.id, { author: b.author, timer });
-      renderPresence();
-    }
-    function clearPeerTyping(id) {
-      const e = peerTyping.get(id);
-      if (e && e.timer) clearTimeout(e.timer);
-      peerTyping.delete(id);
-      renderPresence();
-    }
+    // ----- Cooking state -----
+    // A block's `state` ('editing' | 'published') is authoritative (it lives in
+    // the DB). A peer's block in 'editing' is shown only as "<author> is cooking…"
+    // (content withheld) until they publish (Shift+Enter / move off the line).
+    function isCooking(b) { return b.owner_id !== myOwnerId && b.state === 'editing'; }
     function renderPresence() {
-      const names = [...new Set([...peerTyping.values()].map((e) => e.author).filter((a) => a !== myName))];
+      const names = [...new Set([...blocks.values()].filter(isCooking).map((b) => b.author))];
       if (!names.length) { dom.editingLine.innerHTML = ''; return; }
       const label = names.length === 1 ? `${names[0]} is cooking…` : names.length === 2 ? `${names[0]} and ${names[1]} are cooking…` : `${names.length} people are cooking…`;
       dom.editingLine.innerHTML = '<span class="spin"></span>' + escapeText(label);
@@ -364,15 +350,15 @@
       b.ta = null;
       renderSrc(b);
 
-      // --- Rendered (right): continuous markdown; author/time on hover only ---
+      // --- Rendered (right): continuous markdown; author/time chip at the END ---
       const rnd = document.createElement('div');
       rnd.className = 'rnd-block' + (mine ? ' mine' : '');
       rnd.dataset.id = b.id;
       rnd.style.setProperty('--owner', colorFor(b.author));
-      rnd.innerHTML = `<div class="rnd-meta">
+      rnd.innerHTML = `<div class="md rnd-body"></div><div class="rnd-meta">
           <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
           <span class="m-name"></span><span class="m-time"></span>
-        </div><div class="md rnd-body"></div>`;
+        </div>`;
       b.renderEl = rnd;
       b.renderBody = rnd.querySelector('.rnd-body');
       b.renderName = rnd.querySelector('.m-name');
@@ -394,6 +380,12 @@
         ta.addEventListener('keydown', (e) => onBlockKeydown(e, b));
         syncLnCol(b);
         autoGrow(ta);
+      } else if (isCooking(b)) {
+        // A peer is writing this block — withhold content, show a cooking line.
+        b.srcEl.classList.remove('editing');
+        b.ta = null;
+        b.srcContent.innerHTML = '<div class="code-line"><span class="num"></span><span class="lt cooking"></span></div>';
+        b.srcContent.querySelector('.lt').textContent = '🍳 ' + b.author + ' is cooking…';
       } else {
         b.srcEl.classList.remove('editing');
         b.ta = null;
@@ -430,14 +422,13 @@
       const mine = b.owner_id === myOwnerId;
       b.renderName.textContent = b.author + (mine ? ' (you)' : '');
       b.renderTime.textContent = ' · ' + fmtTime(b.updated_at);
-      // A peer who is still editing → show a general "<author> is cooking…" until
-      // they finish and commit (hit Enter / move off the line).
-      if (!mine && peerTyping.has(b.id)) {
+      // A peer still editing → general "<author> is cooking…" until they publish.
+      if (isCooking(b)) {
         b.renderBody.innerHTML = '<div class="typing-note"><span class="spin"></span><span></span></div>';
-        b.renderBody.querySelector('span:last-child').textContent = b.author + ' is cooking…';
+        b.renderBody.querySelector('span:last-child').textContent = '🍳 ' + b.author + ' is cooking…';
         return;
       }
-      // My own block renders live (with syntax errors); peers' committed blocks render too.
+      // My own block renders live (with syntax errors); peers' published blocks render too.
       renderInto(b.renderBody, b.content);
     }
 
@@ -471,7 +462,6 @@
       const b = blocks.get(id);
       if (!b) return;
       if (editingId === id) editingId = null;
-      clearPeerTyping(id);
       if (b.srcEl) b.srcEl.remove();
       if (b.renderEl) b.renderEl.remove();
       blocks.delete(id);
@@ -493,51 +483,42 @@
     function startEdit(b, caret) {
       if (editingId && editingId !== b.id) { const prev = blocks.get(editingId); if (prev && prev.ta) prev.ta.blur(); }
       editingId = b.id;
+      b.state = 'editing';
       renderSrc(b);
       renumber();
       const ta = b.ta;
       ta.focus();
       const pos = (caret == null) ? ta.value.length : Math.min(caret, ta.value.length);
       ta.setSelectionRange(pos, pos);
-      startCooking(b);
     }
-    // While I edit, peers should see "<me> is cooking…" the WHOLE time — even on
-    // pauses — until I commit. A heartbeat re-asserts editing:true so their note
-    // doesn't expire; a disconnect lets it lapse so they eventually see the result.
-    function startCooking(b) {
-      stopCooking();
-      if (b.synced && b.content.trim()) send(b, true);
-      cookingTimer = setInterval(() => {
-        const cur = editingId && blocks.get(editingId);
-        if (cur && cur.content.trim()) send(cur, true);
-      }, 2000);
-    }
-    function stopCooking() { if (cookingTimer) { clearInterval(cookingTimer); cookingTimer = null; } }
     function onMyInput(b) {
       b.content = b.ta.value;
       b.updated_at = nowISO();
+      b.state = 'editing';
       autoGrow(b.ta);
       syncLnCol(b);
       renumber();
       renderBlock(b);                          // I always see my own live render (with errors)
-      if (b.content.trim()) scheduleEmit(b);   // tells peers "typing" (editing: true)
+      if (b.content.trim()) scheduleEdit(b);   // peers learn I'm cooking (no content sent)
     }
     function onMyBlur(b) {
-      stopCooking();
       if (editingId === b.id) editingId = null;
-      if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty lines
-      commitEmit(b);                           // commit (editing: false) → peers render it
+      if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty blocks
+      publishBlock(b);
+    }
+    // Mark a block published: peers render it. Used by blur and Shift+Enter.
+    function publishBlock(b) {
+      b.state = 'published';
+      publishEmit(b);
       renderSrc(b);                            // back to read-only line rows
       renumber();
+      renderBlock(b);
     }
-    // Enter starts a new line below; Shift+Enter (or being inside a ```fence) keeps a newline.
+    // Enter = newline in the block. Shift+Enter = publish + start a new block.
     function onBlockKeydown(e, b) {
-      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
-      const before = b.ta.value.slice(0, b.ta.selectionStart);
-      const insideFence = ((before.match(/```/g) || []).length % 2) === 1;
-      if (insideFence) return;                 // multi-line code/mermaid → normal newline
+      if (e.key !== 'Enter' || !e.shiftKey || e.isComposing) return;
       e.preventDefault();
-      insertBelow(b);                          // new line below, focused
+      if (b.content.trim()) insertBelow(b);    // new block below + focus → blur publishes this one
     }
 
     function insertBelow(ref) {
@@ -558,7 +539,7 @@
       createMineAt(minPos - 1);
     }
     function createMineAt(position) {
-      const b = { id: newId(), owner_id: myOwnerId, author: myName, content: '', position, updated_at: nowISO(), synced: false };
+      const b = { id: newId(), owner_id: myOwnerId, author: myName, content: '', position, updated_at: nowISO(), synced: false, state: 'editing' };
       blocks.set(b.id, b);
       makeBlock(b);
       placeBlock(b);
@@ -568,43 +549,51 @@
       b.srcEl.scrollIntoView({ block: 'nearest' });
     }
 
-    // ----- Emit (throttled per block) -----
-    // editing:true while actively typing (peers show "typing"); editing:false on
-    // blur to commit (peers render the result).
+    // ----- Emit -----
+    // block:update (throttled) = "I'm editing this" — server stores my draft but
+    // withholds it from peers. block:publish = "render it now" with content.
     const emitState = new Map();
-    function send(b, editing) {
+    function rawEdit(b) {
       const st = emitState.get(b.id) || { timer: null, last: 0 };
       st.last = Date.now(); st.timer = null; emitState.set(b.id, st);
       if (!currentTopicId) return;
-      socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position, editing: !!editing });
+      socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
       b.synced = true;
     }
-    function scheduleEmit(b) {
+    function scheduleEdit(b) {
       const st = emitState.get(b.id) || { timer: null, last: 0 }; emitState.set(b.id, st);
       const wait = 120 - (Date.now() - st.last);
-      if (wait <= 0) send(b, true); else if (!st.timer) st.timer = setTimeout(() => send(b, true), wait);
+      if (wait <= 0) rawEdit(b); else if (!st.timer) st.timer = setTimeout(() => rawEdit(b), wait);
     }
-    function commitEmit(b) { const st = emitState.get(b.id); if (st && st.timer) { clearTimeout(st.timer); st.timer = null; } send(b, false); }
+    function publishEmit(b) {
+      const st = emitState.get(b.id); if (st && st.timer) { clearTimeout(st.timer); st.timer = null; }
+      if (!currentTopicId) return;
+      socket.emit('block:publish', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
+      b.synced = true;
+    }
     function emitDelete(b) { const st = emitState.get(b.id); if (st && st.timer) clearTimeout(st.timer); emitState.delete(b.id); if (currentTopicId) socket.emit('block:delete', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId }); }
 
     // ----- Remote changes -----
-    function applyRemoteBlock(msg) {
+    // editOrPublish=true means content is present (a publish). Otherwise it's an
+    // edit notice (no content) — keep what we have but mark the block 'editing'.
+    function applyRemoteBlock(msg, published) {
       let b = blocks.get(msg.id);
-      // Monotonic by updated_at: never apply an event older than what we already have
-      // (protects against replay/out-of-order delivery; ISO timestamps sort chronologically).
+      // Monotonic by updated_at: never apply an event older than what we have.
       if (b && b.updated_at && msg.updated_at && msg.updated_at < b.updated_at) return;
       if (!b) {
-        b = { id: msg.id, owner_id: msg.owner_id, author: msg.author, content: msg.content, position: msg.position, updated_at: msg.updated_at, synced: true };
+        b = { id: msg.id, owner_id: msg.owner_id, author: msg.author, content: published ? msg.content : '', position: msg.position, updated_at: msg.updated_at, synced: true, state: published ? 'published' : 'editing' };
         blocks.set(b.id, b);
         makeBlock(b);
         placeBlock(b);
       } else {
-        b.content = msg.content; b.updated_at = msg.updated_at; b.position = msg.position; b.author = msg.author;
-        renderSrc(b);          // refresh the read-only line rows on the left
+        b.updated_at = msg.updated_at; b.position = msg.position; b.author = msg.author;
+        b.state = published ? 'published' : 'editing';
+        if (published) b.content = msg.content;   // editing notices carry no content
+        renderSrc(b);
         renumber();
       }
-      if (msg.editing) setPeerTyping(b); else clearPeerTyping(b.id);  // typing vs committed
       renderBlock(b);
+      renderPresence();
     }
 
     // ----- Scroll sync between the two panes -----
@@ -660,8 +649,7 @@
     dom.topicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createTopic(); });
 
     function resetDoc() {
-      blocks.clear(); editingId = null; stopCooking();
-      peerTyping.forEach((e) => e.timer && clearTimeout(e.timer)); peerTyping.clear();
+      blocks.clear(); editingId = null;
       emitState.forEach((s) => s.timer && clearTimeout(s.timer)); emitState.clear();
       dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';
       renderPresence();
@@ -689,7 +677,11 @@
       resetDoc();
       const rows = Array.isArray(list) ? list : [];
       rows.forEach((row) => {
-        const b = { id: row.id, owner_id: row.owner_id, author: row.author, content: row.content, position: row.position, updated_at: row.updated_at, synced: true };
+        // A peer's block still in 'editing' (e.g. they're mid-write) is mine? no →
+        // show "cooking" and withhold content; my own loads as published content.
+        const mine = row.owner_id === myOwnerId;
+        const state = (!mine && row.state === 'editing') ? 'editing' : 'published';
+        const b = { id: row.id, owner_id: row.owner_id, author: row.author, content: (state === 'editing') ? '' : row.content, position: row.position, updated_at: row.updated_at, synced: true, state };
         blocks.set(b.id, b);
         makeBlock(b);
         dom.sourceInner.appendChild(b.srcEl);
@@ -699,8 +691,13 @@
       ensureAffordances();
       // Replay anything that arrived while fetching (in order), then go live.
       const buffered = loadBuffer; loadBuffer = null;
-      buffered.forEach((ev) => { if (ev.type === 'update') applyRemoteBlock(ev.msg); else removeLocal(ev.msg.id); });
+      buffered.forEach((ev) => {
+        if (ev.type === 'edit') applyRemoteBlock(ev.msg, false);
+        else if (ev.type === 'publish') applyRemoteBlock(ev.msg, true);
+        else removeLocal(ev.msg.id);
+      });
       renumber();
+      renderPresence();
     }
 
     // ===================================================================
@@ -723,10 +720,15 @@
     // ===================================================================
     const socket = io();
     socket.on('topic:created', (topic) => { if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); } });
-    socket.on('block:update', (msg) => {
+    socket.on('block:update', (msg) => {   // a peer is editing (no content)
       if (msg.topicId !== currentTopicId || msg.owner_id === myOwnerId) return;
-      if (loadBuffer) { loadBuffer.push({ type: 'update', msg }); return; } // mid-load → queue
-      applyRemoteBlock(msg);
+      if (loadBuffer) { loadBuffer.push({ type: 'edit', msg }); return; } // mid-load → queue
+      applyRemoteBlock(msg, false);
+    });
+    socket.on('block:publish', (msg) => {  // a peer published (with content)
+      if (msg.topicId !== currentTopicId || msg.owner_id === myOwnerId) return;
+      if (loadBuffer) { loadBuffer.push({ type: 'publish', msg }); return; } // mid-load → queue
+      applyRemoteBlock(msg, true);
     });
     socket.on('block:delete', (msg) => {
       if (msg.topicId !== currentTopicId) return;

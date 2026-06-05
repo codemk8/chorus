@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%B6%3C/text%3E%3C/svg%3E" />
 <title>Chorus — collaborative discussions</title>
 <style>
   :root {
@@ -440,7 +441,7 @@
         return ''; // no/unknown language → markdown-it escapes & wraps it plainly
       },
     });
-    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', suppressErrorRendering: true });
+    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict', suppressErrorRendering: true });
     let mermaidSeq = 0;
     const mermaidCache = new Map();
     function cacheMermaid(src, svg) { mermaidCache.set(src, svg); if (mermaidCache.size > 300) mermaidCache.delete(mermaidCache.keys().next().value); }
@@ -1163,7 +1164,7 @@
       document.documentElement.setAttribute('data-theme', name);
       localStorage.setItem(THEME_KEY, name);
       dom.themeSelect.value = name;
-      try { mermaid.initialize({ startOnLoad: false, theme: THEME_MERMAID[name], securityLevel: 'loose', suppressErrorRendering: true }); } catch (_) {}
+      try { mermaid.initialize({ startOnLoad: false, theme: THEME_MERMAID[name], securityLevel: 'strict', suppressErrorRendering: true }); } catch (_) {}
       mermaidCache.clear();                       // force diagrams to re-render in the new theme
       if (rerender) blocks.forEach((b) => renderBlock(b));
     }

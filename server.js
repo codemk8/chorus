@@ -154,6 +154,7 @@ function saveBlock({ id, topicId, ownerId, editor, content, position, state }) {
   if (existing) {
     q.updateBlock.run(content, st, editor, now, id);
   } else {
+    if (!q.topicById.get(topicId)) return null; // no such topic → don't create orphan blocks
     if (q.countBlocksInTopic.get(topicId).n >= LIMITS.maxBlocksPerTopic) return null; // cap reached
     q.insertBlock.run(id, topicId, ownerId, editor, content, Number(position) || 0, st, editor, now, now);
   }
@@ -172,7 +173,37 @@ function removeBlock(id) {
 // Express app
 // ---------------------------------------------------------------------------
 const app = express();
-app.use(express.json());
+app.disable('x-powered-by');
+// Behind a reverse proxy (Fly / Render / nginx / Cloudflare)? Set TRUST_PROXY=1
+// (a hop count, or 'true') so req.ip — used by the login throttle — is the real
+// client address, not the proxy's. Left off by default so X-Forwarded-For can't
+// be spoofed when there's no proxy in front.
+if (process.env.TRUST_PROXY) {
+  const tp = process.env.TRUST_PROXY;
+  app.set('trust proxy', tp === 'true' ? true : (Number(tp) || tp));
+}
+app.use(express.json({ limit: '256kb' }));
+
+// Security headers. The client is one inline HTML/CSS/JS file plus a few libraries
+// from jsdelivr, so the CSP permits 'unsafe-inline' and that one CDN; everything
+// else is restricted to same-origin.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; font-src 'self' data:; " +
+    "connect-src 'self' ws: wss:; " +
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
+  next();
+});
+
+// Liveness/readiness probe for load balancers & uptime checks (no auth).
+app.get(['/healthz', '/api/health'], (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+
 app.use(express.static(path.join(__dirname, 'public'), {
   // The whole app (HTML + inline JS/CSS) is one file, so force the browser to
   // revalidate it on every load — a reload can never serve a stale build.
@@ -220,6 +251,23 @@ app.get('/api/topics/:id/document', requireAuth, (req, res) => {
   });
 });
 
+// Unknown /api/* path → JSON 404 (don't fall through to the static handler).
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
+
+// Central error handler — return JSON and never leak a stack trace to clients.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err && (err.type === 'entity.parse.failed' || err.status === 400 || err.statusCode === 400)) {
+    return res.status(400).json({ error: 'Bad request' });
+  }
+  if (err && (err.type === 'entity.too.large' || err.status === 413)) {
+    return res.status(413).json({ error: 'Payload too large' });
+  }
+  console.error('HTTP error:', err && err.stack ? err.stack : err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Server error' });
+});
+
 // ---------------------------------------------------------------------------
 // Socket.io real-time layer
 // ---------------------------------------------------------------------------
@@ -262,8 +310,14 @@ io.on('connection', (socket) => {
   socket.data.name = null;
   socket.data.topicId = null;
 
+  // Wrap every handler: a malformed event or a transient DB error logs and drops,
+  // it never takes down the process.
+  const on = (event, fn) => socket.on(event, async (...args) => {
+    try { await fn(...args); } catch (err) { console.error(`socket '${event}' failed:`, err && err.message); }
+  });
+
   // A user opens a topic.
-  socket.on('topic:join', async ({ topicId, name }) => {
+  on('topic:join', async ({ topicId, name }) => {
     if (!topicId || !name) return;
     if (!rateLimit(socket, 'join', 40, 10000)) return;
 
@@ -284,7 +338,7 @@ io.on('connection', (socket) => {
   });
 
   // Anyone can create a topic; broadcast to every connected client.
-  socket.on('topic:create', ({ title }) => {
+  on('topic:create', ({ title }) => {
     const clean = String(title || '').trim();
     if (!clean) return;
     if (!rateLimit(socket, 'topicCreate', 8, 60000)) return;
@@ -297,7 +351,7 @@ io.on('connection', (socket) => {
   // EDITING a block (anyone may edit any block). Persist the in-progress content
   // for durability but DON'T relay it — peers only learn who's modifying it, and
   // can't grab a block someone else is actively editing.
-  socket.on('block:update', ({ topicId, id, ownerId, author, content, position }) => {
+  on('block:update', ({ topicId, id, ownerId, author, content, position }) => {
     const editorId = String(ownerId || '').trim(); // who is editing (stable id)
     const editor = String(author || '').trim();     // editor's display name
     const blockId = String(id || '').trim();
@@ -320,7 +374,7 @@ io.on('connection', (socket) => {
   });
 
   // PUBLISH: the editor finished (Shift+Enter / moved off). Relay the content.
-  socket.on('block:publish', ({ topicId, id, ownerId, author, content, position }) => {
+  on('block:publish', ({ topicId, id, ownerId, author, content, position }) => {
     const editorId = String(ownerId || '').trim();
     const editor = String(author || '').trim();
     const blockId = String(id || '').trim();
@@ -335,7 +389,7 @@ io.on('connection', (socket) => {
   });
 
   // Delete a block — anyone may.
-  socket.on('block:delete', ({ topicId, id }) => {
+  on('block:delete', ({ topicId, id }) => {
     const blockId = String(id || '').trim();
     if (!topicId || !blockId) return;
     if (!rateLimit(socket, 'blockDelete', 30, 5000)) return;
@@ -345,7 +399,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', async () => {
+  on('disconnect', async () => {
     // Publish anything this socket left mid-edit so peers stop seeing the overlay.
     if (socket.data.editing) {
       for (const [blockId, topicId] of socket.data.editing) {
@@ -417,14 +471,23 @@ server.listen(PORT, HOST, () => {
 
 // Flush the WAL into the main DB file and close cleanly on exit.
 let closing = false;
-function shutdown() {
+function shutdown(code) {
   if (closing) return;
   closing = true;
   try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (_) { /* ignore */ }
-  process.exit(0);
+  process.exit(code || 0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown(0));
+process.on('SIGTERM', () => shutdown(0));
+
+// Don't die silently. Log, checkpoint the DB, and let the process manager restart us.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason && reason.stack ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err && err.stack ? err.stack : err);
+  shutdown(1);
+});
 
 // Keep the main chorus.db current instead of letting all data pile up in the
 // write-ahead log: fold the WAL back into the .db file on a timer. PASSIVE never

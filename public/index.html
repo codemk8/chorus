@@ -613,7 +613,9 @@
     // Show/hide the "<editor> is modifying" overlay when someone else holds the block.
     function updateModifying(b) {
       const on = isLocked(b);                                                        // someone ELSE is editing
-      const draft = !on && b.draftByMe && editingId !== b.id && b.state === 'editing'; // my own unpublished draft
+      // NB: must be a strict boolean — classList.toggle(cls, undefined) *flips* the
+      // class, so for peers' blocks (draftByMe undefined) this would wrongly toggle.
+      const draft = !!(!on && b.draftByMe && editingId !== b.id && b.state === 'editing'); // my own unpublished draft
       [b.srcEl, b.renderEl].forEach((el) => { if (!el) return; el.classList.toggle('modifying', on); el.classList.toggle('draft', draft); });
       if (b.srcEl) b.srcEl.title = draft ? 'Unpublished draft — double-click to edit, then Shift+Enter to publish' : '';
       [[b.srcOverlay, b.srcOverlayText], [b.renderOverlay, b.renderOverlayText]].forEach(([ov, t]) => {

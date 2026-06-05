@@ -21,7 +21,8 @@ No login. No build step. No submit button. Just a display name and a browser.
   read-only. The right pane is the rendered, attributed result for the whole topic.
 - **Continuous render + attribution chip** — the right pane reads as one Markdown
   document. Ownership shows as a colored left bar, with a small author + timestamp
-  **chip at the end of each block**.
+  chip **floated to the top-right** of each block (the text wraps around it, so it
+  never breaks onto its own line).
 - **EDITING / PUBLISHED state with a "modifying" overlay** — each block has an
   authoritative `state` in the DB. The moment you put your cursor on a block it's
   `editing`, and peers see a spinner overlay — "**_<you> is modifying…_**" — over

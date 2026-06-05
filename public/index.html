@@ -100,9 +100,10 @@
 
   /* Rendered blocks (right): ONE continuous document. Owner shown only as a
      colored left bar; name + timestamp appear on hover (no inline headers). */
-  .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 4px 18px 2px; }
-  /* Attribution chip, always shown at the END of each block */
-  .rnd-meta { display: flex; align-items: center; gap: 6px; width: fit-content; margin: 3px 0 4px auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px 1px 3px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+  .rnd-block { display: flow-root; position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 4px 18px 4px; }
+  /* Attribution chip — floats to the top-right so the markdown wraps around it
+     instead of being pushed onto a new line. */
+  .rnd-meta { float: right; display: inline-flex; align-items: center; gap: 6px; margin: 1px 0 3px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px 1px 3px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
   .rnd-meta .avatar { width: 15px; height: 15px; font-size: 8px; }
   .rnd-meta .m-name { font-weight: 600; color: var(--text); }
 
@@ -364,10 +365,10 @@
       rnd.className = 'rnd-block' + (mine ? ' mine' : '');
       rnd.dataset.id = b.id;
       rnd.style.setProperty('--owner', colorFor(b.author));
-      rnd.innerHTML = `<div class="md rnd-body"></div><div class="rnd-meta">
+      rnd.innerHTML = `<div class="rnd-meta">
           <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
           <span class="m-name"></span><span class="m-time"></span>
-        </div>`;
+        </div><div class="md rnd-body"></div>`;
       const rov = makeOverlay(); rnd.appendChild(rov.el);
       b.renderEl = rnd;
       b.renderBody = rnd.querySelector('.rnd-body');

@@ -155,6 +155,13 @@
   .src-block.modifying { min-height: 28px; }
   .rnd-block.modifying { min-height: 40px; }
 
+  /* My unpublished draft — saved but NOT broadcast; only Shift+Enter publishes. */
+  .src-block.draft { border-left: 2px dashed var(--amber); }
+  .src-block.draft::after { content: "draft ⇧⏎"; position: absolute; top: 1px; right: 8px; font-family: var(--mono); font-size: 9px; color: var(--amber); opacity: .75; pointer-events: none; }
+  .rnd-block.draft { border-left-style: dashed; border-left-color: var(--amber); }
+  .rnd-block.draft .rnd-body { opacity: .72; }
+  .rnd-block.draft .rnd-meta::after { content: "· draft"; color: var(--amber); margin-left: 2px; }
+
   /* Spinner */
   .spin { width: 12px; height: 12px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -275,7 +282,7 @@
         <div class="toolbar">
           <span class="editing-line" id="editingLine"></span>
           <span class="spacer"></span>
-          <span class="hint-line">Double-click a block to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · clear a block to delete it</span>
+          <span class="hint-line">Double-click to edit · <code>Enter</code> = newline · <code>Shift+Enter</code> = publish · click away keeps a draft · clear to delete</span>
         </div>
 
         <div class="editor-wrap">
@@ -319,6 +326,7 @@
     const blocks = new Map();        // id -> block { id, owner_id, author, content, position, ..., srcEl, ta, renderEl, renderBody, renderTime }
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
     let editingId = null;            // the block id I'm currently editing inline (one at a time)
+    let committing = false;          // true while publishBlock() re-renders, so the textarea-removal blur is ignored
 
     // Periodic auto-save of the block being edited (draft persisted to the server).
     const AUTOSAVE_MS = 5000;
@@ -407,7 +415,7 @@
     // Who's shown as the block's author = whoever last modified it.
     function lmb(b) { return b.last_modified_by || b.author || '?'; }
     // A block is locked when SOMEONE ELSE is editing it (I can't grab it then).
-    function isLocked(b) { return b.state === 'editing' && editingId !== b.id; }
+    function isLocked(b) { return b.state === 'editing' && editingId !== b.id && !b.draftByMe; }
 
     // ----- Block elements (source + render) -----
     function makeBlock(b) {
@@ -456,8 +464,10 @@
     }
     // Show/hide the "<editor> is modifying" overlay when someone else holds the block.
     function updateModifying(b) {
-      const on = isLocked(b);
-      [b.srcEl, b.renderEl].forEach((el) => el && el.classList.toggle('modifying', on));
+      const on = isLocked(b);                                                        // someone ELSE is editing
+      const draft = !on && b.draftByMe && editingId !== b.id && b.state === 'editing'; // my own unpublished draft
+      [b.srcEl, b.renderEl].forEach((el) => { if (!el) return; el.classList.toggle('modifying', on); el.classList.toggle('draft', draft); });
+      if (b.srcEl) b.srcEl.title = draft ? 'Unpublished draft — double-click to edit, then Shift+Enter to publish' : '';
       [[b.srcOverlay, b.srcOverlayText], [b.renderOverlay, b.renderOverlayText]].forEach(([ov, t]) => {
         if (!ov) return;
         ov.classList.toggle('show', on);
@@ -580,6 +590,7 @@
       if (editingId && editingId !== b.id) { const prev = blocks.get(editingId); if (prev && prev.ta) prev.ta.blur(); }
       editingId = b.id;
       b.state = 'editing';
+      b.draftByMe = true;           // it's my unpublished draft until I hit Shift+Enter
       b.last_modified_by = myName;  // I'm now the editor
       autoSaveLast = 0; autoSaveDirty = false;  // fresh edit session
       if (b.synced) rawEdit(b);     // existing block → peers see "<me> is modifying" now
@@ -604,24 +615,39 @@
       updateAutoSaveBar();
     }
     function onMyBlur(b) {
+      if (committing) return;                 // publishBlock is re-rendering this block — not a real focus loss
       stopAutoSave();
       if (editingId === b.id) editingId = null;
       if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty blocks
-      publishBlock(b);
+      // Losing focus must NEVER publish — a stray click or tab-switch would
+      // otherwise broadcast half-written content. Keep it as an unpublished
+      // draft (state stays 'editing'); only Shift+Enter publishes.
+      b.draftByMe = true;
+      if (autoSaveDirty || !b.synced) rawEdit(b); // persist the latest draft to the server
+      renderSrc(b);                               // textarea → read-only rows (your draft)
+      renumber();
+      renderBlock(b);
     }
-    // Mark a block published: peers render it. Used by blur and Shift+Enter.
+    // Publish a block so peers render it. The ONLY publish path (Shift+Enter).
     function publishBlock(b) {
+      committing = true;                       // suppress the blur fired by swapping out the focused textarea
+      stopAutoSave();
+      if (editingId === b.id) editingId = null;
+      b.draftByMe = false;
       b.state = 'published';
       publishEmit(b);
       renderSrc(b);                            // back to read-only line rows
       renumber();
       renderBlock(b);
+      committing = false;
     }
-    // Enter = newline in the block. Shift+Enter = publish + start a new block.
+    // Enter = newline in the block. Shift+Enter = the one explicit "publish".
     function onBlockKeydown(e, b) {
       if (e.key !== 'Enter' || !e.shiftKey || e.isComposing) return;
       e.preventDefault();
-      if (b.content.trim()) insertBelow(b);    // new block below + focus → blur publishes this one
+      if (!b.content.trim()) return;
+      publishBlock(b);                         // publish this block…
+      insertBelow(b);                          // …and continue in a fresh block below
     }
 
     function insertBelow(ref) {

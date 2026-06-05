@@ -62,8 +62,14 @@ No login. No build step. No submit button. Just a display name and a browser.
   and a countdown to the next. A disconnect mid-edit publishes your last saved draft.
 - **Persistent** — blocks are stored in SQLite (`better-sqlite3`) with a
   fractional `position` for ordering; the whole document is restored on page load.
-- **Clean dark, developer-friendly UI** — topics sidebar + a single shared
-  block document.
+- **Export** — a top-right **Export** menu downloads the topic as a raw
+  **`.md`** file (the canonical server-assembled Markdown) or opens a clean,
+  light **print-to-PDF** view of the rendered document (diagrams included).
+- **Themes** — a top-right dropdown switches between preset color themes
+  (**GitHub Dark/Light, Dracula, Nord, Solarized**); the choice is saved to
+  `localStorage` and Mermaid diagrams re-render to match.
+- **Clean, developer-friendly UI** — topics sidebar + a single shared block
+  document, in your theme of choice.
 
 ## How it works (the idea)
 

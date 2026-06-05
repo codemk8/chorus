@@ -119,7 +119,13 @@ function removeBlock(id) {
 // ---------------------------------------------------------------------------
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  // The whole app (HTML + inline JS/CSS) is one file, so force the browser to
+  // revalidate it on every load — a reload can never serve a stale build.
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
 
 // REST API — used to restore state on page load
 app.get('/api/topics', (req, res) => {

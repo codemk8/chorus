@@ -1,5 +1,12 @@
 # Chorus 🎶
 
+[![CI](https://github.com/codemk8/chorus/actions/workflows/ci.yml/badge.svg)](https://github.com/codemk8/chorus/actions/workflows/ci.yml)
+[![Docker image](https://img.shields.io/badge/ghcr.io-codemk8%2Fchorus-2496ED?logo=docker&logoColor=white)](https://github.com/codemk8/chorus/pkgs/container/chorus)
+[![Version](https://img.shields.io/github/v/tag/codemk8/chorus?label=version&sort=semver&color=success)](https://github.com/codemk8/chorus/releases)
+[![Node](https://img.shields.io/badge/node-18%2B-3c873a?logo=node.js&logoColor=white)](DEVELOPER.md)
+[![License: MIT](https://img.shields.io/github/license/codemk8/chorus?color=blue)](LICENSE)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/primastudio)
+
 Real-time collaborative Markdown discussions. Co-author one shared document per
 **topic** from author-owned **blocks**, rendered live with
 [Mermaid](https://mermaid.js.org/) diagrams and syntax highlighting — conflict-free

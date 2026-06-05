@@ -98,14 +98,14 @@
   .insert-after::after { content: ""; position: absolute; top: 50%; transform: translateY(-50%); left: 52px; right: 16px; height: 2px; background: rgba(88,166,255,.4); border-radius: 2px; }
   .insert-after:hover::after { background: var(--accent); }
 
-  /* Rendered blocks (right) */
-  .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 6px 4px 10px 16px; margin: 5px 0; border-radius: 0 6px 6px 0; }
-  .rnd-block.active { background: rgba(88,166,255,.06); }
-  .rnd-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .rnd-head .a-name { font-weight: 600; font-size: 12px; }
-  .rnd-head .c-time { font-size: 11px; color: var(--muted-2); }
-  .rnd-head .gutter-spin { display: none; }
-  .rnd-block.active .rnd-head .gutter-spin { display: inline-flex; }
+  /* Rendered blocks (right): ONE continuous document. Owner shown only as a
+     colored left bar; name + timestamp appear on hover (no inline headers). */
+  .rnd-block { position: relative; border-left: 3px solid var(--owner, var(--border-2)); padding: 3px 18px; }
+  .rnd-block:hover { background: rgba(255,255,255,.012); }
+  .rnd-meta { position: absolute; top: 5px; right: 12px; z-index: 4; display: none; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 999px; padding: 2px 11px 2px 4px; font-size: 11px; color: var(--muted); box-shadow: 0 6px 18px rgba(0,0,0,.45); white-space: nowrap; }
+  .rnd-block:hover .rnd-meta { display: inline-flex; }
+  .rnd-meta .avatar { width: 16px; height: 16px; font-size: 8px; }
+  .rnd-meta .m-name { font-weight: 600; color: var(--text); }
 
   /* Spinner */
   .spin { width: 12px; height: 12px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: middle; }
@@ -255,6 +255,7 @@
     const peerTyping = new Map();    // blockId -> { author, timer }  (someone else is typing this block)
     let loadBuffer = null;           // while loading a topic, live block events queue here, then replay
     let editingId = null;            // the block id I'm currently editing inline (one at a time)
+    let cookingTimer = null;         // heartbeat that keeps peers' "is cooking…" alive while I edit
 
     const el = (id) => document.getElementById(id);
     const dom = {
@@ -319,9 +320,9 @@
     function setPeerTyping(b) {
       const e = peerTyping.get(b.id);
       if (e && e.timer) clearTimeout(e.timer);
-      // Safety net: if updates stop (peer disconnected/crashed without committing),
-      // render their last content. Normal blur sends an explicit commit instead.
-      const timer = setTimeout(() => { peerTyping.delete(b.id); renderBlock(b); renderPresence(); }, 3500);
+      // Safety net: if heartbeats stop (peer disconnected without committing),
+      // render their last content. Must exceed the 2s edit heartbeat.
+      const timer = setTimeout(() => { peerTyping.delete(b.id); renderBlock(b); renderPresence(); }, 5000);
       peerTyping.set(b.id, { author: b.author, timer });
       renderPresence();
     }
@@ -334,7 +335,7 @@
     function renderPresence() {
       const names = [...new Set([...peerTyping.values()].map((e) => e.author).filter((a) => a !== myName))];
       if (!names.length) { dom.editingLine.innerHTML = ''; return; }
-      const label = names.length === 1 ? `${names[0]} is typing…` : names.length === 2 ? `${names[0]} and ${names[1]} are typing…` : `${names.length} people are typing…`;
+      const label = names.length === 1 ? `${names[0]} is cooking…` : names.length === 2 ? `${names[0]} and ${names[1]} are cooking…` : `${names.length} people are cooking…`;
       dom.editingLine.innerHTML = '<span class="spin"></span>' + escapeText(label);
     }
 
@@ -363,21 +364,19 @@
       b.ta = null;
       renderSrc(b);
 
-      // --- Rendered (right) ---
+      // --- Rendered (right): continuous markdown; author/time on hover only ---
       const rnd = document.createElement('div');
       rnd.className = 'rnd-block' + (mine ? ' mine' : '');
       rnd.dataset.id = b.id;
       rnd.style.setProperty('--owner', colorFor(b.author));
-      rnd.innerHTML = `<div class="rnd-head">
+      rnd.innerHTML = `<div class="rnd-meta">
           <span class="avatar" style="background:${colorFor(b.author)}">${escapeText(initials(b.author))}</span>
-          <span class="a-name"></span>${mine ? '<span class="you-badge">you</span>' : ''}
-          <span class="gutter-spin"><span class="spin"></span></span>
-          <span class="c-time"></span>
+          <span class="m-name"></span><span class="m-time"></span>
         </div><div class="md rnd-body"></div>`;
-      rnd.querySelector('.a-name').textContent = b.author;
       b.renderEl = rnd;
       b.renderBody = rnd.querySelector('.rnd-body');
-      b.renderTime = rnd.querySelector('.c-time');
+      b.renderName = rnd.querySelector('.m-name');
+      b.renderTime = rnd.querySelector('.m-time');
     }
 
     // Fill a block's source slot: read-only line rows, or an inline textarea if
@@ -428,11 +427,14 @@
       renumber();
     }
     function renderBlock(b) {
-      b.renderTime.textContent = fmtTime(b.updated_at);
-      // Others' in-progress block → show only "<author> is typing…".
-      if (b.owner_id !== myOwnerId && peerTyping.has(b.id)) {
+      const mine = b.owner_id === myOwnerId;
+      b.renderName.textContent = b.author + (mine ? ' (you)' : '');
+      b.renderTime.textContent = ' · ' + fmtTime(b.updated_at);
+      // A peer who is still editing → show a general "<author> is cooking…" until
+      // they finish and commit (hit Enter / move off the line).
+      if (!mine && peerTyping.has(b.id)) {
         b.renderBody.innerHTML = '<div class="typing-note"><span class="spin"></span><span></span></div>';
-        b.renderBody.querySelector('span:last-child').textContent = b.author + ' is typing…';
+        b.renderBody.querySelector('span:last-child').textContent = b.author + ' is cooking…';
         return;
       }
       // My own block renders live (with syntax errors); peers' committed blocks render too.
@@ -497,7 +499,20 @@
       ta.focus();
       const pos = (caret == null) ? ta.value.length : Math.min(caret, ta.value.length);
       ta.setSelectionRange(pos, pos);
+      startCooking(b);
     }
+    // While I edit, peers should see "<me> is cooking…" the WHOLE time — even on
+    // pauses — until I commit. A heartbeat re-asserts editing:true so their note
+    // doesn't expire; a disconnect lets it lapse so they eventually see the result.
+    function startCooking(b) {
+      stopCooking();
+      if (b.synced && b.content.trim()) send(b, true);
+      cookingTimer = setInterval(() => {
+        const cur = editingId && blocks.get(editingId);
+        if (cur && cur.content.trim()) send(cur, true);
+      }, 2000);
+    }
+    function stopCooking() { if (cookingTimer) { clearInterval(cookingTimer); cookingTimer = null; } }
     function onMyInput(b) {
       b.content = b.ta.value;
       b.updated_at = nowISO();
@@ -508,6 +523,7 @@
       if (b.content.trim()) scheduleEmit(b);   // tells peers "typing" (editing: true)
     }
     function onMyBlur(b) {
+      stopCooking();
       if (editingId === b.id) editingId = null;
       if (!b.content.trim()) { if (b.synced) emitDelete(b); removeLocal(b.id); return; } // drop empty lines
       commitEmit(b);                           // commit (editing: false) → peers render it
@@ -644,7 +660,7 @@
     dom.topicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createTopic(); });
 
     function resetDoc() {
-      blocks.clear(); editingId = null;
+      blocks.clear(); editingId = null; stopCooking();
       peerTyping.forEach((e) => e.timer && clearTimeout(e.timer)); peerTyping.clear();
       emitState.forEach((s) => s.timer && clearTimeout(s.timer)); emitState.clear();
       dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';

@@ -19,11 +19,15 @@ No login. No build step. No submit button. Just a display name and a browser.
   inline**, press **Enter** for a new line, **Shift+Enter** for a line break, and
   clear a line to delete it. You can only edit lines you own; everyone else's are
   read-only. The right pane is the rendered, attributed result for the whole topic.
-- **Typing-aware rendering** — while you're editing a line, **you** see your own
-  live render, and any invalid Markdown/Mermaid surfaces the **actual syntax
-  error** so you can fix it. **Others** don't see your half-written render — that
-  line just shows "**_<you> is typing…_**" until you move off it (commit), at
-  which point it renders for everyone.
+- **Continuous render + hover attribution** — the right pane reads as one
+  Markdown document (no inline name/timestamp headers). Ownership shows as a
+  colored left bar; the author + timestamp appear on **hover** over a block.
+- **"Cooking" while others edit** — while you're editing a line, **you** see your
+  own live render, and any invalid Markdown/Mermaid surfaces the **actual syntax
+  error** so you can fix it. **Others** don't see your half-written work — that
+  line just shows "**_<you> is cooking…_**" (the whole time you're in it, pauses
+  included) until you finish and commit (hit Enter / move off), when it renders
+  for everyone.
 - **One shared document, owned by blocks** — the document is ordered paragraphs
   ("blocks"). While editing a line, press **Enter** to start a new line below (and
   jump to it), **Shift+Enter** for a line break within the line. **Enter inside a

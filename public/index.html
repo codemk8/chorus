@@ -112,6 +112,13 @@
     --accent:#73d0ff; --accent-2:#3b8fd6; --green:#d5ff80; --chip:#2d3543; --danger:#ff6666; --amber:#ffd173;
     --code-bg:#1a1f29;
   }
+  /* The Matrix — green phosphor on black, monospace everything. Wake up, Neo. */
+  html[data-theme="matrix"] {
+    --bg:#000000; --bg-alt:#040804; --panel:#0a0f0a; --panel-2:#0f160f;
+    --border:#16401a; --border-2:#1f5e26; --text:#33ff66; --muted:#1aa83f; --muted-2:#108029;
+    --accent:#00ff41; --accent-2:#008f29; --green:#00ff41; --chip:#0f160f; --danger:#ff5555; --amber:#b6ff3a;
+    --code-bg:#050a05; --sans:var(--mono);
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; font-family: var(--sans); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
@@ -356,6 +363,7 @@
           <option value="solarizeddark">🌑 Solarized Dark</option>
           <option value="synthwave">🌆 Synthwave '84</option>
           <option value="ayu">🌊 Ayu Mirage</option>
+          <option value="matrix">🟢 The Matrix</option>
         </optgroup>
         <optgroup label="Light">
           <option value="light">☀️ GitHub Light</option>
@@ -1158,7 +1166,7 @@
     const THEME_MERMAID = {
       dark: 'dark', dimmed: 'dark', dracula: 'dark', nord: 'dark', onedark: 'dark', monokai: 'dark',
       tokyonight: 'dark', catppuccin: 'dark', gruvbox: 'dark', rosepine: 'dark', solarizeddark: 'dark',
-      synthwave: 'dark', ayu: 'dark',
+      synthwave: 'dark', ayu: 'dark', matrix: 'dark',
       light: 'default', solarized: 'default', latte: 'default', gruvboxlight: 'default',
     };
     function applyTheme(name, rerender) {

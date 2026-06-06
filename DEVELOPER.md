@@ -81,14 +81,15 @@ see the [README](README.md).
 - **Export** — a top-right **Export** menu downloads the topic as a raw
   **`.md`** file (the canonical server-assembled Markdown) or opens a clean,
   light **print-to-PDF** view of the rendered document (diagrams included).
-- **Themes** — a top-right dropdown switches between **17 preset color themes**
+- **Themes** — a top-right dropdown switches between **18 preset color themes**
   grouped by Dark / Light (GitHub Dark · Dimmed · Light, Dracula, Nord, One Dark,
   Monokai, Tokyo Night, Catppuccin Mocha · Latte, Gruvbox Dark · Light, Rosé Pine,
-  Solarized Dark · Light, Synthwave '84, Ayu Mirage). Every theme is just a set of
-  CSS variables, so the whole UI — including code highlighting — recolors instantly;
+  Solarized Dark · Light, Synthwave '84, Ayu Mirage, and **The Matrix** — green
+  phosphor on black, monospace everything). Every theme is just a set of CSS
+  variables, so the whole UI — including code highlighting — recolors instantly;
   the choice is saved to `localStorage` and Mermaid diagrams re-render to match.
 
-### 17 built-in themes
+### 18 built-in themes
 
 The whole UI — chrome, code highlighting, and Mermaid diagrams — recolors instantly.
 

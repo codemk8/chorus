@@ -129,7 +129,7 @@ discussions, design docs, and shared scratchpads; not a Google-Docs replacement.
 | Backend   | Node.js · Express · Socket.io                   |
 | Database  | SQLite via `better-sqlite3`                      |
 | Frontend  | Vanilla JS in a single HTML file (inline CSS/JS) |
-| Markdown  | `markdown-it` + `highlight.js` + `mermaid.js` (via CDN) |
+| Markdown  | `markdown-it` + `highlight.js` + `mermaid.js` (vendored in `public/vendor/`, served same-origin — no runtime CDN) |
 
 ## Configuration
 

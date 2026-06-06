@@ -1,0 +1,2 @@
+# Vendored, minified third-party libraries — exclude from GitHub language stats.
+public/vendor/*.min.js linguist-vendored

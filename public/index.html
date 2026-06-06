@@ -165,6 +165,10 @@
   .ctrl-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
   .ctrl-menu button:hover { background: var(--panel-2); }
   @media (max-width: 600px) { .topic-header { padding-right: 24px; } #topControls { position: static; justify-content: flex-end; padding: 8px 14px; } }
+
+  /* Connection status — shown while the realtime socket is dropped/reconnecting. */
+  .conn-status { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 80; display: inline-flex; align-items: center; gap: 8px; background: var(--panel); color: var(--amber); border: 1px solid var(--amber); border-radius: 999px; padding: 6px 14px; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0,0,0,.4); }
+  .conn-status.hidden { display: none; }
   .online .label { font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; }
   .user-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; }
   .user-chip.me { border-color: var(--accent); }
@@ -340,6 +344,7 @@
   </div>
 
   <div class="app">
+    <div class="conn-status hidden" id="connStatus"><span class="spin"></span> Reconnecting…</div>
     <div id="topControls">
       <div class="export-wrap hidden" id="exportWrap">
         <button class="ctrl-btn" id="exportBtn" title="Export this topic">⬇ Export ▾</button>
@@ -426,9 +431,11 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+  <!-- Vendored locally (see public/vendor/) so Chorus has no runtime CDN dependency:
+       works offline/air-gapped, keeps the CSP same-origin, and a CDN outage can't break the app. -->
+  <script src="/vendor/markdown-it.min.js"></script>
+  <script src="/vendor/mermaid.min.js"></script>
+  <script src="/vendor/highlight.min.js"></script>
   <script>
   (function () {
     'use strict';
@@ -506,6 +513,7 @@
       sourceScroll: el('sourceScroll'), sourceInner: el('sourceInner'),
       renderScroll: el('renderScroll'), renderInner: el('renderInner'),
       themeSelect: el('themeSelect'), exportWrap: el('exportWrap'), exportBtn: el('exportBtn'), exportMenu: el('exportMenu'),
+      connStatus: el('connStatus'),
     };
 
     // ----- Helpers -----
@@ -1156,7 +1164,24 @@
     });
     socket.on('users:update', (users) => renderOnline(users || []));
     socket.on('user:join', () => {});
-    socket.on('connect', () => { if (currentTopicId) joinTopicRoom(); });
+
+    // ----- Connection lifecycle: reconnect-aware re-sync + a status indicator -----
+    let everConnected = false;
+    socket.on('connect', () => {
+      dom.connStatus.classList.add('hidden');     // (re)connected
+      const reconnected = everConnected;
+      everConnected = true;
+      if (!currentTopicId) return;
+      joinTopicRoom();                             // re-enter the topic room
+      // After a drop we may have missed live events. Re-sync from the server —
+      // but not while you're mid-edit, so an active draft isn't blown away.
+      if (reconnected && !editingId) loadBlocks(currentTopicId);
+    });
+    socket.on('disconnect', (reason) => {
+      // Ignore deliberate client-side disconnects (e.g. logout); Socket.io will
+      // auto-reconnect from any real drop, and this pill shows until it does.
+      if (reason !== 'io client disconnect') dom.connStatus.classList.remove('hidden');
+    });
 
     // ===================================================================
     // Theme switcher (top-right). Each preset overrides the CSS variables;

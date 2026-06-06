@@ -184,16 +184,16 @@ if (process.env.TRUST_PROXY) {
 }
 app.use(express.json({ limit: '256kb' }));
 
-// Security headers. The client is one inline HTML/CSS/JS file plus a few libraries
-// from jsdelivr, so the CSP permits 'unsafe-inline' and that one CDN; everything
-// else is restricted to same-origin.
+// Security headers. The client is one inline HTML/CSS/JS file and its libraries are
+// vendored under /public/vendor, so everything is same-origin — the CSP only needs
+// 'unsafe-inline' for the inline app script/styles; no external origins are allowed.
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+    "script-src 'self' 'unsafe-inline'; " +
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data:; font-src 'self' data:; " +
     "connect-src 'self' ws: wss:; " +

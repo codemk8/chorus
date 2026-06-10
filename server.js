@@ -2,6 +2,8 @@
 
 const path = require('path');
 const http = require('http');
+const os = require('os');
+const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
@@ -51,9 +53,14 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: 'Unauthorized' });
 }
 // Per-IP throttle so the password can't be brute-forced (10 tries / 5 min).
+// Successful logins clear their bucket (an office NAT must not lock itself
+// out), and stale buckets are pruned so the map can't grow without bound.
 const loginHits = new Map();
 function loginThrottle(ip) {
   const now = Date.now();
+  if (loginHits.size > 5000) {
+    for (const [k, v] of loginHits) { if (now - v.start >= 5 * 60 * 1000) loginHits.delete(k); }
+  }
   let b = loginHits.get(ip);
   if (!b || now - b.start >= 5 * 60 * 1000) { b = { start: now, count: 0 }; loginHits.set(ip, b); }
   b.count += 1;
@@ -67,7 +74,15 @@ function loginThrottle(ip) {
 // CHORUS_DB to point elsewhere — tests use a throwaway file so they can never
 // clobber real data.
 const DB_PATH = process.env.CHORUS_DB || path.join(__dirname, 'chorus.db');
-const db = new Database(DB_PATH);
+function openDatabase(p) {
+  try { return new Database(p); } catch (err) {
+    console.error(`\n✗ Cannot open the database at ${p}`);
+    console.error('  Check that the directory exists and is writable by this user.');
+    console.error(`  (${err.message})\n`);
+    process.exit(1);
+  }
+}
+const db = openDatabase(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL'); // durable + fast under WAL
 
@@ -189,16 +204,21 @@ app.use(express.json({ limit: '256kb' }));
 // Security headers. The client is one inline HTML/CSS/JS file and its libraries are
 // vendored under /public/vendor, so everything is same-origin — the CSP only needs
 // 'unsafe-inline' for the inline app script/styles; no external origins are allowed.
+// connect-src is pinned to this request's own host (not a blanket ws:/wss:), so a
+// compromised script still can't open a websocket to an attacker's origin.
+const HOST_RE = /^[A-Za-z0-9.\-:[\]]+$/; // hostname[:port], incl. IPv6 brackets
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  const host = String(req.headers.host || '');
+  const connect = HOST_RE.test(host) ? `'self' ws://${host} wss://${host}` : "'self' ws: wss:";
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; " +
     "script-src 'self' 'unsafe-inline'; " +
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data:; font-src 'self' data:; " +
-    "connect-src 'self' ws: wss:; " +
+    `connect-src ${connect}; ` +
     "base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
   next();
 });
@@ -214,6 +234,23 @@ app.use(express.static(path.join(__dirname, 'public'), {
   },
 }));
 
+// Light per-IP rate limit on the whole /api surface: /document can legitimately
+// be large, so a flood of reads is the cheapest way to hurt a small instance.
+// 120 requests / 10s per IP is far beyond anything the stock client does.
+const apiHits = new Map();
+app.use('/api', (req, res, next) => {
+  const ip = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+  const now = Date.now();
+  let b = apiHits.get(ip);
+  if (!b || now - b.start >= 10000) {
+    if (apiHits.size > 10000) apiHits.clear(); // bound the map under address spoofing
+    b = { start: now, count: 0 }; apiHits.set(ip, b);
+  }
+  b.count += 1;
+  if (b.count > 120) return res.status(429).json({ error: 'Too many requests' });
+  next();
+});
+
 // Auth: tell the client whether a login is needed, and trade the password for a token.
 app.get('/api/auth', (req, res) => res.json({ required: AUTH_REQUIRED }));
 app.post('/api/login', (req, res) => {
@@ -222,7 +259,10 @@ app.post('/api/login', (req, res) => {
   if (!AUTH_REQUIRED) return res.json({ token: '' });
   const u = (req.body && req.body.username) || '';
   const p = (req.body && req.body.password) || '';
-  if (safeEqual(u, AUTH_USER) && safeEqual(p, AUTH_PASSWORD)) return res.json({ token: AUTH_TOKEN });
+  if (safeEqual(u, AUTH_USER) && safeEqual(p, AUTH_PASSWORD)) {
+    loginHits.delete(ip); // a successful login must not count toward the lockout
+    return res.json({ token: AUTH_TOKEN });
+  }
   res.status(401).json({ error: 'Incorrect username or password.' });
 });
 
@@ -254,6 +294,22 @@ app.get('/api/topics/:id/document', requireAuth, (req, res) => {
   });
 });
 
+// Consistent point-in-time backup of the whole database, safe against live
+// writers (SQLite's VACUUM INTO — unlike `cp`, it can never capture a torn
+// page). Download it from the Export menu or:
+//   curl -H "Authorization: Bearer <token>" -o backup.db http://…/api/backup
+app.get('/api/backup', requireAuth, (req, res) => {
+  const tmp = path.join(os.tmpdir(), `chorus-backup-${process.pid}-${Date.now()}.db`);
+  try {
+    db.prepare('VACUUM INTO ?').run(tmp);
+    res.download(tmp, 'chorus-backup.db', () => fs.unlink(tmp, () => {}));
+  } catch (err) {
+    fs.unlink(tmp, () => {});
+    console.error('backup failed:', err && err.message);
+    res.status(500).json({ error: 'Backup failed' });
+  }
+});
+
 // Unknown /api/* path → JSON 404 (don't fall through to the static handler).
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -267,7 +323,7 @@ app.use((err, req, res, next) => {
     return res.status(413).json({ error: 'Payload too large' });
   }
   console.error('HTTP error:', err && err.stack ? err.stack : err);
-  if (res.headersSent) return;
+  if (res.headersSent) return next(err); // mid-stream failure → let express close the socket
   res.status(500).json({ error: 'Server error' });
 });
 
@@ -285,6 +341,22 @@ const io = new Server(server, { maxHttpBufferSize: 1024 * 1024 });
 // to the socket ONCE at the handshake — block handlers use these, never the
 // per-event payload, so one client can't impersonate another or release
 // someone else's editing lock by forging event fields.
+// Cap concurrent sockets per IP: the per-socket rate limits would otherwise
+// multiply away with N connections (each socket gets its own write budget).
+const MAX_SOCKETS_PER_IP = Number(process.env.MAX_SOCKETS_PER_IP) || 20;
+const ipSockets = new Map();
+io.use((socket, next) => {
+  const ip = socket.handshake.address || 'unknown';
+  const n = ipSockets.get(ip) || 0;
+  if (n >= MAX_SOCKETS_PER_IP) return next(new Error('too many connections'));
+  ipSockets.set(ip, n + 1);
+  socket.once('disconnect', () => {
+    const c = (ipSockets.get(ip) || 1) - 1;
+    if (c <= 0) ipSockets.delete(ip); else ipSockets.set(ip, c);
+  });
+  next();
+});
+
 io.use((socket, next) => {
   const a = socket.handshake.auth || {};
   socket.data.ownerId = String(a.ownerId || '').slice(0, 64);
@@ -596,8 +668,13 @@ function shutdown(code) {
   try { io.close(finish); } catch (_) { finish(); }   // closes sockets + the HTTP server
   setTimeout(finish, 3000).unref();                    // don't wait forever for a stuck connection
 }
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
+// First signal: graceful shutdown. Second signal: the operator means NOW.
+const onSignal = (code) => () => {
+  if (closing) { console.error('Second signal — exiting immediately.'); process.exit(code); }
+  shutdown(0);
+};
+process.on('SIGINT', onSignal(130));
+process.on('SIGTERM', onSignal(143));
 
 // Don't die silently. Log, checkpoint the DB, and let the process manager restart us.
 process.on('unhandledRejection', (reason) => {
@@ -610,9 +687,12 @@ process.on('uncaughtException', (err) => {
 
 // Keep the main chorus.db current instead of letting all data pile up in the
 // write-ahead log: fold the WAL back into the .db file on a timer. PASSIVE never
-// blocks live writers, so this is cheap. The payoff: even a hard `kill -9` (no
-// clean shutdown) or a plain `cp chorus.db` backup is at most a few seconds
-// behind — your data never lives *only* in the .wal file for long.
+// blocks live writers, so this is cheap. Durability notes: writes are synchronous,
+// so even a hard `kill -9` loses nothing (the WAL replays on next open); the only
+// loss window is power loss / OS crash under `synchronous = NORMAL` (~the last
+// few transactions). For backups use GET /api/backup (VACUUM INTO — always a
+// consistent snapshot); do NOT `cp` the live .db, which can race a checkpoint
+// and capture a torn copy.
 const checkpointTimer = setInterval(() => {
   if (closing) return;
   try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) { /* ignore */ }

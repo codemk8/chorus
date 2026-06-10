@@ -12,8 +12,13 @@ services:
     healthCheckPath: /healthz
     envVars:
       # Open demo: anyone with the URL can read & write. To require a login
-      # instead, drop this and set CHORUS_PASSWORD (and CHORUS_USER) below.
+      # instead, drop CHORUS_NO_AUTH and set CHORUS_PASSWORD (and CHORUS_USER).
       - key: CHORUS_NO_AUTH
+        value: "1"
+      # Render fronts the app with a reverse proxy — without this, req.ip is the
+      # proxy's address and every per-IP limit (login throttle, API rate limit)
+      # collapses into one shared bucket for all visitors.
+      - key: TRUST_PROXY
         value: "1"
 
     # SQLite runs fine here — it's just a local file. The free tier's storage is

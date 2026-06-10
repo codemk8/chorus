@@ -353,6 +353,7 @@
         <div class="ctrl-menu hidden" id="exportMenu">
           <button data-fmt="md">📄 Markdown (.md)</button>
           <button data-fmt="pdf">🖨 PDF (print)</button>
+          <button data-fmt="db">💾 Backup all data (.db)</button>
         </div>
       </div>
       <select class="ctrl-select" id="themeSelect" title="Color theme">
@@ -1377,6 +1378,19 @@
       let doc; try { doc = await (await apiFetch(`/api/topics/${currentTopicId}/document`)).json(); } catch (_) { return; }
       downloadBlob((doc && doc.markdown) || '', safeName(doc && doc.title) + '.md', 'text/markdown;charset=utf-8');
     }
+    async function exportBackup() {
+      // A consistent point-in-time snapshot of the entire database (every
+      // topic), produced server-side with VACUUM INTO — safe under live writes.
+      try {
+        const res = await apiFetch('/api/backup');
+        if (!res.ok) throw new Error('http ' + res.status);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'chorus-backup.db'; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      } catch (_) { showToast('Backup failed — is the server reachable?'); }
+    }
     const PDF_CSS = `
       *{box-sizing:border-box}
       body{font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2328;background:#fff;max-width:820px;margin:0 auto;padding:40px 34px}
@@ -1407,7 +1421,7 @@
     dom.exportMenu.addEventListener('click', (e) => {
       const btn = e.target.closest('button'); if (!btn) return;
       dom.exportMenu.classList.add('hidden');
-      if (btn.dataset.fmt === 'md') exportMarkdown(); else if (btn.dataset.fmt === 'pdf') exportPDF();
+      if (btn.dataset.fmt === 'md') exportMarkdown(); else if (btn.dataset.fmt === 'pdf') exportPDF(); else if (btn.dataset.fmt === 'db') exportBackup();
     });
     document.addEventListener('click', () => dom.exportMenu.classList.add('hidden'));
 

@@ -165,6 +165,8 @@ Node 20.6+ you can load a file with `node --env-file=.env server.js`.
 | `CHORUS_DB` | `./chorus.db` | SQLite file path |
 | `MAX_TOPICS` | `300` | Cap on total topics |
 | `MAX_BLOCKS_PER_TOPIC` | `1000` | Cap on blocks per topic |
+| `MAX_SOCKETS_PER_IP` | `20` | Cap on concurrent realtime connections per IP |
+| `EDIT_GRACE_MS` | `8000` | How long a disconnected editor may reconnect before their draft is auto-published |
 
 ## Login & access control
 
@@ -198,11 +200,26 @@ different port keeps all your data. The server prints the exact path on boot
   CHORUS_DB=/tmp/scratch.db node server.js
   ```
 - Writes go to a write-ahead log (`chorus.db-wal`) first; the server folds it
-  back into `chorus.db` **every ~15s** and again on a clean `Ctrl+C`, so the main
-  file is always current — even a hard `kill -9` loses at most a few seconds.
-- To back up, just copy `chorus.db` (kept current by the periodic checkpoint). To
-  reset, delete it while the server is **stopped** (deleting it while running
-  orphans the live data and you'll get a fresh, empty DB on the next start).
+  back into `chorus.db` **every ~15s** and again on a clean `Ctrl+C`. Writes are
+  synchronous, so even a hard `kill -9` loses nothing (the WAL replays on the
+  next start); only power loss / OS crash can cost the last few seconds.
+
+### Backups
+
+Use the built-in snapshot — it's produced with SQLite's `VACUUM INTO`, which is
+always consistent even under live writes (a plain `cp` of a live `chorus.db`
+can race a checkpoint and produce a torn, unusable copy):
+
+- **From the UI**: Export menu → *Backup all data (.db)* — downloads every topic.
+- **From the shell**:
+  ```bash
+  curl -H "Authorization: Bearer <token>" -o backup.db http://localhost:3000/api/backup
+  ```
+- **Restore**: stop the server, replace `chorus.db` with the backup (delete any
+  leftover `chorus.db-wal`/`-shm`), start the server.
+
+To reset, delete `chorus.db` while the server is **stopped** (deleting it while
+running orphans the live data and you'll get a fresh, empty DB on next start).
 
 ## Host & port options
 
@@ -275,17 +292,20 @@ Docker, a PaaS) and put TLS in front of it. It's hardened for that:
 
 - **Auth on by default** — set a strong `CHORUS_PASSWORD`; the token gates both the
   REST API and the WebSocket.
-- **Security headers** — `Content-Security-Policy` (locks scripts to self + the one
-  CDN), `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`; `x-powered-by`
+- **Security headers** — `Content-Security-Policy` fully same-origin (every
+  library is vendored; `connect-src` is pinned to the request's own host),
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`; `x-powered-by`
   is off and untrusted Mermaid diagrams render in `strict` mode (no script injection).
+- **Rate limits** — login throttle (per-IP, brute-force), an `/api` read limit
+  (per-IP), per-socket write limits, and a per-IP concurrent-connection cap.
 - **Health probe** — `GET /healthz` for your load balancer / uptime check (the
   Docker image wires up a `HEALTHCHECK`).
-- **Resilient** — every socket handler is sandboxed, unhandled errors are logged and
-  the DB is checkpointed before exit, and the WAL is folded into `chorus.db` every
-  15 s so a crash loses at most a few seconds.
-- **Behind a proxy** — set `TRUST_PROXY` so the login throttle keys on the real
+- **Resilient** — every socket handler is sandboxed, every write is acknowledged
+  to the client, unhandled errors are logged and the DB is checkpointed before
+  exit, and the WAL is folded into `chorus.db` every 15 s.
+- **Behind a proxy** — set `TRUST_PROXY` so the rate limits key on the real
   client IP, and terminate TLS at the proxy (the token + login travel over it).
-- **Tests/CI** — `npm test` runs an end-to-end suite; CI runs it on Node 18/20/22.
+- **Tests/CI** — `npm test` runs an end-to-end suite; CI runs it on Node 20/22/24.
 
 **Checklist:** set `CHORUS_PASSWORD` ·  put it behind HTTPS ·  set `TRUST_PROXY` if
 proxied ·  mount `CHORUS_DB` on a persistent volume ·  point monitoring at `/healthz`.
@@ -311,7 +331,13 @@ docker run -p 3000:3000 -v chorus-data:/data chorus
 A multi-arch image (`linux/amd64` + `linux/arm64`) is built and pushed to
 `ghcr.io/codemk8/chorus` whenever you publish a GitHub Release or push a `v*` tag —
 see [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml).
-Tags follow the release version (`1.2.3`, `1.2`) plus `latest`.
+Tags follow the release version (`1.2.3`, `1.2`); `latest` tracks full releases only.
+
+**Volume permissions**: the container starts as root just long enough for its
+entrypoint to `chown /data` to the runtime user, then drops to `node` — so
+bind mounts (`-v $PWD/data:/data`) and platform volumes (Fly.io & co., which
+arrive root-owned) work out of the box. If you run with `--user`, make sure the
+mounted directory is writable by that uid.
 
 Free-ish hosts:
 
@@ -326,17 +352,19 @@ Free-ish hosts:
 
 **Demo guardrails** (already built in, tunable via env): the default **login**
 (set `CHORUS_PASSWORD`, or `--no-auth` for an open demo), per-socket rate limits on
-all socket events, a 256 KB payload cap, `MAX_TOPICS` (default 300), and
-`MAX_BLOCKS_PER_TOPIC` (default 1000). There's a single shared login and **no
-per-user accounts or moderation**, so for a public demo either set a password you're
-willing to share or treat `--no-auth` as an open, disposable sandbox.
+all socket events, per-IP API and connection limits, a payload cap, `MAX_TOPICS`
+(default 300), and `MAX_BLOCKS_PER_TOPIC` (default 1000). There's a single shared
+login and **no per-user accounts or moderation**, so for a public demo either set a
+password you're willing to share or treat `--no-auth` as an open, disposable sandbox.
 
 ## Tests
 
 `npm test` runs an end-to-end suite (`node --test`) that spawns the real server with
 a throwaway DB and a known password, then exercises the HTTP API, auth gating, the
-security headers, and the realtime draft-withheld / publish-relayed / persisted flow.
-CI runs it on Node 18, 20, and 22 (`.github/workflows/ci.yml`).
+security headers, and the realtime invariants: draft withholding (socket + REST),
+server-side editing locks, acknowledged writes at every cap, and the
+disconnect-grace / reconnect re-claim flow.
+CI runs it on Node 20, 22, and 24 (`.github/workflows/ci.yml`).
 
 ## Project structure
 
@@ -348,9 +376,10 @@ chorus/
 │   └── index.html         # Entire frontend: inline CSS + JS
 ├── test/
 │   └── server.test.js     # End-to-end tests (node:test) — `npm test`
-├── .github/workflows/ci.yml  # CI: npm ci + npm test on Node 18/20/22
+├── .github/workflows/ci.yml  # CI: npm ci + npm test on Node 20/22/24
 ├── .env.example           # Documented configuration
-├── Dockerfile             # Hardened container image (non-root + healthcheck)
+├── Dockerfile             # Hardened container image (drops to non-root + healthcheck)
+├── docker-entrypoint.sh   # Fixes /data volume ownership, then drops privileges
 ├── README.md              # Quick start (this file's companion)
 ├── DEVELOPER.md           # You are here
 └── LICENSE

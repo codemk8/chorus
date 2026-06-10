@@ -24,12 +24,13 @@
   "license": "MIT",
   "main": "server.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test"
+    "test": "node --test test/server.test.js",
+    "test:browser": "node --test test/browser.test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",

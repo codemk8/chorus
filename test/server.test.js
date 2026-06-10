@@ -321,6 +321,59 @@ test('topic cap rejections are acknowledged', async () => {
   } finally { capped.stop(); }
 });
 
+test('every publish records a revision: newest first, de-duped, capped at 30', async () => {
+  const { topic, sockets: [sa] } = await topicWith(srv, TOKEN, 1);
+  const blockId = 'blk-rev-' + topic.id;
+  for (const v of ['v1', 'v2', 'v2', 'v3']) { // the duplicate publish must not add an entry
+    assert.equal((await emitAck(sa, 'block:publish', { topicId: topic.id, id: blockId, content: v, position: 1 })).ok, true);
+  }
+  assert.equal((await srv.req('GET', `/api/blocks/${blockId}/revisions`)).status, 401, 'history requires auth');
+  const revs = (await srv.req('GET', `/api/blocks/${blockId}/revisions`, null, TOKEN)).body;
+  assert.deepEqual(revs.map((r) => r.content), ['v3', 'v2', 'v1'], 'newest first, duplicates skipped');
+
+  for (let i = 0; i < 35; i++) {
+    await emitAck(sa, 'block:publish', { topicId: topic.id, id: blockId, content: 'bulk-' + i, position: 1 });
+    await sleep(40); // stay under the 30 events/s socket budget
+  }
+  const pruned = (await srv.req('GET', `/api/blocks/${blockId}/revisions`, null, TOKEN)).body;
+  assert.equal(pruned.length, 30, 'history is capped per block');
+  assert.equal(pruned[0].content, 'bulk-34', 'the newest versions are the ones kept');
+  sa.close();
+});
+
+test('topic rename: persisted and broadcast', async () => {
+  const { topic, sockets: [sa, sb] } = await topicWith(srv, TOKEN, 2);
+  const bcast = once(sb, 'topic:renamed');
+  const ack = await emitAck(sa, 'topic:rename', { topicId: topic.id, title: 'Renamed!' });
+  assert.equal(ack.ok, true);
+  assert.deepEqual(await bcast, { id: topic.id, title: 'Renamed!' });
+  const list = (await srv.req('GET', '/api/topics', null, TOKEN)).body;
+  assert.equal(list.find((t) => t.id === topic.id).title, 'Renamed!');
+  sa.close(); sb.close();
+});
+
+test('topic delete: cascades blocks + history, broadcasts, refused while someone else edits', async () => {
+  const { topic, sockets: [sa, sb] } = await topicWith(srv, TOKEN, 2);
+  const blockId = 'blk-cas-' + topic.id;
+  await emitAck(sa, 'block:publish', { topicId: topic.id, id: blockId, content: 'doomed', position: 1 });
+
+  // bob holds an edit in the topic → alice's delete is refused
+  await emitAck(sb, 'block:update', { topicId: topic.id, id: blockId, content: 'bob editing', position: 1 });
+  const refused = await emitAck(sa, 'topic:delete', { topicId: topic.id });
+  assert.deepEqual({ ok: refused.ok, error: refused.error }, { ok: false, error: 'locked' });
+
+  // bob lets go → delete succeeds, cascades, and broadcasts
+  await emitAck(sb, 'block:publish', { topicId: topic.id, id: blockId, content: 'bob done', position: 1 });
+  const bcast = once(sb, 'topic:deleted');
+  assert.equal((await emitAck(sa, 'topic:delete', { topicId: topic.id })).ok, true);
+  assert.deepEqual(await bcast, { id: topic.id });
+  assert.equal((await srv.req('GET', `/api/topics/${topic.id}/blocks`, null, TOKEN)).status, 404, 'topic is gone');
+  assert.equal((await srv.req('GET', `/api/blocks/${blockId}/revisions`, null, TOKEN)).status, 404, 'block history is gone');
+  const list = (await srv.req('GET', '/api/topics', null, TOKEN)).body;
+  assert.equal(list.some((t) => t.id === topic.id), false, 'sidebar list no longer contains it');
+  sa.close(); sb.close();
+});
+
 test('backup endpoint: 401 without a token, a real SQLite snapshot with one', async () => {
   assert.equal((await srv.req('GET', '/api/backup')).status, 401);
   const r = await srv.req('GET', '/api/backup', null, TOKEN);

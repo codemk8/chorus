@@ -113,6 +113,17 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_blocks_topic ON blocks (topic_id, position);
+
+  -- Every published version of a block (newest last). Capped per block, so a
+  -- busy block keeps its recent history without unbounded growth.
+  CREATE TABLE IF NOT EXISTS revisions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id   TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    author     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_revisions_block ON revisions (block_id, id);
 `);
 
 // Migrations for older DBs.
@@ -154,7 +165,34 @@ const q = {
   deleteBlock: db.prepare('DELETE FROM blocks WHERE id = ?'),
   countTopics: db.prepare('SELECT COUNT(*) AS n FROM topics'),
   countBlocksInTopic: db.prepare('SELECT COUNT(*) AS n FROM blocks WHERE topic_id = ?'),
+  renameTopic: db.prepare('UPDATE topics SET title = ? WHERE id = ?'),
+  deleteTopic: db.prepare('DELETE FROM topics WHERE id = ?'),
+  blockIdsByTopic: db.prepare('SELECT id FROM blocks WHERE topic_id = ?'),
+  deleteBlocksByTopic: db.prepare('DELETE FROM blocks WHERE topic_id = ?'),
+  insertRevision: db.prepare('INSERT INTO revisions (block_id, content, author, created_at) VALUES (?, ?, ?, ?)'),
+  lastRevision: db.prepare('SELECT content FROM revisions WHERE block_id = ? ORDER BY id DESC LIMIT 1'),
+  revisionsByBlock: db.prepare('SELECT id, content, author, created_at FROM revisions WHERE block_id = ? ORDER BY id DESC LIMIT 50'),
+  pruneRevisions: db.prepare('DELETE FROM revisions WHERE block_id = ? AND id NOT IN (SELECT id FROM revisions WHERE block_id = ? ORDER BY id DESC LIMIT 30)'),
+  deleteRevisionsForBlock: db.prepare('DELETE FROM revisions WHERE block_id = ?'),
+  deleteRevisionsForTopic: db.prepare('DELETE FROM revisions WHERE block_id IN (SELECT id FROM blocks WHERE topic_id = ?)'),
 };
+
+// Record a block's published state as a revision (skipping no-op republishes),
+// keeping at most the 30 most recent versions per block.
+function recordRevision(row) {
+  const last = q.lastRevision.get(row.id);
+  if (last && last.content === row.content) return;
+  q.insertRevision.run(row.id, row.content, row.last_modified_by || row.author || '', row.updated_at);
+  q.pruneRevisions.run(row.id, row.id);
+}
+
+// Delete a whole topic: its blocks' history, its blocks, then the topic row —
+// atomically, so a crash can't leave orphans.
+const deleteTopicCascade = db.transaction((topicId) => {
+  q.deleteRevisionsForTopic.run(topicId);
+  q.deleteBlocksByTopic.run(topicId);
+  q.deleteTopic.run(topicId);
+});
 
 // Public-demo guardrails — bound storage so a single server can't be flooded.
 const LIMITS = {
@@ -294,6 +332,12 @@ app.get('/api/topics/:id/document', requireAuth, (req, res) => {
   });
 });
 
+// A block's published history, newest first (drafts are never recorded).
+app.get('/api/blocks/:id/revisions', requireAuth, (req, res) => {
+  if (!q.blockById.get(req.params.id)) return res.status(404).json({ error: 'Block not found' });
+  res.json(q.revisionsByBlock.all(req.params.id));
+});
+
 // Consistent point-in-time backup of the whole database, safe against live
 // writers (SQLite's VACUUM INTO — unlike `cp`, it can never capture a torn
 // page). Download it from the Export menu or:
@@ -404,7 +448,10 @@ function releaseAndPublish(blockId) {
       editor: existing.last_modified_by, content: existing.content,
       position: existing.position, state: 'published',
     });
-    if (row) io.to(roomName(existing.topic_id)).emit('block:publish', publishPayload(existing.topic_id, row, lock.ownerId));
+    if (row) {
+      recordRevision(row);
+      io.to(roomName(existing.topic_id)).emit('block:publish', publishPayload(existing.topic_id, row, lock.ownerId));
+    }
   }
 }
 
@@ -490,6 +537,41 @@ io.on('connection', (socket) => {
     reply(ack, { ok: true, topic });
   });
 
+  // Rename a topic — broadcast so every sidebar updates.
+  on('topic:rename', (payload, ack) => {
+    const { topicId } = payload || {};
+    const clean = String((payload && payload.title) || '').trim();
+    if (!topicId || !clean) return reply(ack, { ok: false, error: 'invalid' });
+    if (!rateLimit(socket, 'topicMod', 10, 60000)) return reply(ack, { ok: false, error: 'rate' });
+    const topic = q.topicById.get(Number(topicId));
+    if (!topic) return reply(ack, { ok: false, error: 'no-topic' });
+    q.renameTopic.run(clean.slice(0, LIMITS.maxTitle), topic.id);
+    io.emit('topic:renamed', { id: topic.id, title: clean.slice(0, LIMITS.maxTitle) });
+    reply(ack, { ok: true });
+  });
+
+  // Delete a topic and everything in it. Refused while someone ELSE is mid-edit
+  // inside it — never yank a document out from under an active editor.
+  on('topic:delete', (payload, ack) => {
+    const { topicId } = payload || {};
+    if (!topicId) return reply(ack, { ok: false, error: 'invalid' });
+    if (!rateLimit(socket, 'topicMod', 10, 60000)) return reply(ack, { ok: false, error: 'rate' });
+    const topic = q.topicById.get(Number(topicId));
+    if (!topic) return reply(ack, { ok: false, error: 'no-topic' });
+    const blockIds = q.blockIdsByTopic.all(topic.id).map((r) => r.id);
+    for (const id of blockIds) {
+      const lock = editLocks.get(id);
+      if (lock && lock.ownerId !== socket.data.ownerId) return reply(ack, { ok: false, error: 'locked', by: lock.name });
+    }
+    deleteTopicCascade(topic.id);
+    for (const id of blockIds) {
+      const lock = editLocks.get(id);
+      if (lock) { if (lock.grace) clearTimeout(lock.grace); editLocks.delete(id); }
+    }
+    io.emit('topic:deleted', { id: topic.id });
+    reply(ack, { ok: true });
+  });
+
   // EDITING a block. Persist the in-progress content for durability but DON'T
   // relay it — peers only learn who's modifying it. The block's lock is claimed
   // here; updates from anyone else are rejected until the holder lets go.
@@ -546,6 +628,7 @@ io.on('connection', (socket) => {
 
     const { row, error } = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'published' });
     if (!row) return reply(ack, { ok: false, error });
+    recordRevision(row);
     if (lock) { if (lock.grace) clearTimeout(lock.grace); editLocks.delete(blockId); }
     if (socket.data.editing) socket.data.editing.delete(blockId);
     socket.to(roomName(row.topic_id)).emit('block:publish', publishPayload(row.topic_id, row, editorId));
@@ -563,6 +646,7 @@ io.on('connection', (socket) => {
     const existing = q.blockById.get(blockId);
     if (!existing) return reply(ack, { ok: true, missing: true });
     q.deleteBlock.run(blockId);
+    q.deleteRevisionsForBlock.run(blockId);
     if (lock) { if (lock.grace) clearTimeout(lock.grace); editLocks.delete(blockId); }
     if (socket.data.editing) socket.data.editing.delete(blockId);
     // Broadcast to the block's REAL topic room (never the payload's claim).

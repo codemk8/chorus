@@ -15,14 +15,21 @@ see the [README](README.md).
   per-boot token.
 - **Display-name identity** — after signing in, pick a display name; it's saved to
   `localStorage` and attributes every block you add.
+- **Version history** — every publish records a revision (de-duped, capped at 30
+  per block). Hover a block and click **⟲** to browse its published versions and
+  restore any of them — the restored text becomes *your draft*, so nothing goes
+  live until you Shift+Enter.
 - **Topics** — anyone can create one; they appear instantly in everyone's
-  sidebar.
+  sidebar. The row's **⋯** menu renames or deletes a topic for everyone
+  (deletion cascades to its blocks and their history, and is refused while
+  someone else is mid-edit inside it).
 - **Side-by-side source & render** — two panes: a **line-numbered code editor on
   the left**, the **live rendered document on the right** (scroll-synced). The
-  left is one continuous document: **click a line (or its number) to edit it
-  inline**, press **Enter** for a new line, **Shift+Enter** for a line break, and
-  clear a line to delete it. You can only edit lines you own; everyone else's are
-  read-only. The right pane is the rendered, attributed result for the whole topic.
+  left is one continuous document: **double-click a line to edit it inline**,
+  press **Enter** for a new line, **Shift+Enter** to publish, and clear a line to
+  delete it. Anyone may edit any line — but a line someone is editing is locked
+  until they publish. The right pane is the rendered, attributed result for the
+  whole topic.
 - **Continuous render + attribution chip** — the right pane reads as one Markdown
   document. Ownership shows as a colored left bar, with a small author + timestamp
   chip **floated to the top-right** of each block (the text wraps around it, so it
@@ -264,8 +271,10 @@ header — get a token from `POST /api/login` with `{ "username", "password" }`.
 | `GET /api/auth` | Whether login is required: `{ required: true\|false }` (no auth needed) |
 | `POST /api/login` | `{ token }` for valid `{ username, password }`; `401` otherwise (no auth needed) |
 | `GET /api/topics` | All topics: `[{ id, title, created_at }]` |
-| `GET /api/topics/:id/blocks` | The topic's blocks in reading order: `[{ id, owner_id, author, content, position, created_at, updated_at }]` |
+| `GET /api/topics/:id/blocks` | The topic's blocks in reading order: `[{ id, owner_id, author, content, position, created_at, updated_at }]` (mid-edit blocks have their content withheld) |
 | `GET /api/topics/:id/document` | The whole document in one shot (see below) |
+| `GET /api/blocks/:id/revisions` | The block's published history, newest first: `[{ id, content, author, created_at }]` (drafts are never recorded; capped at 30/block) |
+| `GET /api/backup` | A consistent SQLite snapshot of the entire database (`VACUUM INTO`) as a download |
 
 `GET /api/topics/:id/document` returns the canonical document — topic metadata, the
 ordered owned blocks, and the assembled Markdown:

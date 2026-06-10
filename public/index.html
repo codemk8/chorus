@@ -145,6 +145,27 @@
   .topic.active { background: var(--panel-2); border-color: var(--border-2); }
   .topic .t-title { font-weight: 600; font-size: 13.5px; word-break: break-word; }
   .topic .t-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .topic { position: relative; }
+  .t-kebab { position: absolute; top: 7px; right: 7px; width: 22px; height: 22px; border-radius: 6px; border: none; background: transparent; color: var(--muted); cursor: pointer; opacity: 0; font-size: 14px; line-height: 1; }
+  .topic:hover .t-kebab, .t-kebab:focus { opacity: .85; }
+  .t-kebab:hover { background: var(--panel-2); color: var(--text); }
+  .t-menu { position: absolute; top: 28px; right: 6px; z-index: 30; min-width: 132px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 5px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 12px 30px rgba(0,0,0,.35); }
+  .t-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 7px 10px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+  .t-menu button:hover { background: var(--panel-2); }
+  .t-menu button.danger { color: var(--danger); }
+  .t-title input { width: 100%; background: var(--bg); border: 1px solid var(--accent); color: var(--text); border-radius: 6px; padding: 4px 7px; font-size: 13px; font-weight: 600; outline: none; }
+  /* Block version history */
+  .m-hist { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 3px; border-radius: 5px; opacity: 0; }
+  .rnd-block:hover .m-hist { opacity: .85; }
+  .m-hist:hover { color: var(--text); background: var(--panel-2); }
+  .hist-modal { width: 540px; }
+  .hist-list { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; text-align: left; }
+  .hist-item { border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; }
+  .hist-item .h-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+  .hist-item pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px var(--mono); color: var(--text); max-height: 110px; overflow: auto; background: var(--code-bg, var(--bg)); border-radius: 6px; padding: 7px 9px; }
+  .hist-item .h-restore { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 3px 9px; cursor: pointer; font-size: 11.5px; white-space: nowrap; }
+  .hist-item .h-restore:hover { border-color: var(--accent); color: var(--accent); }
+  .hist-empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 12px 0; }
   .topic-empty { padding: 16px 18px; color: var(--muted); font-size: 13px; }
 
   /* Main */
@@ -331,6 +352,15 @@
       <input id="loginInput" type="password" placeholder="Password" autocomplete="current-password" />
       <div class="err" id="loginErr"></div>
       <button class="btn" id="loginSubmit">Unlock</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="histModal">
+    <div class="modal hist-modal">
+      <h2>Version history</h2>
+      <p>Published versions of this block — restore one as your draft, then Shift+Enter to publish.</p>
+      <div class="hist-list" id="histList"></div>
+      <button class="btn" id="histClose">Close</button>
     </div>
   </div>
 
@@ -535,6 +565,7 @@
       renderScroll: el('renderScroll'), renderInner: el('renderInner'),
       themeSelect: el('themeSelect'), exportWrap: el('exportWrap'), exportBtn: el('exportBtn'), exportMenu: el('exportMenu'),
       connStatus: el('connStatus'),
+      histModal: el('histModal'), histList: el('histList'), histClose: el('histClose'),
     };
 
     // ----- Helpers -----
@@ -642,8 +673,9 @@
       rnd.className = 'rnd-block';
       rnd.dataset.id = b.id;
       rnd.innerHTML = `<div class="rnd-meta">
-          <span class="avatar"></span><span class="m-name"></span><span class="m-time"></span>
+          <span class="avatar"></span><span class="m-name"></span><span class="m-time"></span><button class="m-hist" title="Version history">⟲</button>
         </div><div class="md rnd-body"></div>`;
+      rnd.querySelector('.m-hist').addEventListener('click', (e) => { e.stopPropagation(); openHistory(b); });
       const rov = makeOverlay(); rnd.appendChild(rov.el);
       rnd.addEventListener('dblclick', () => { if (editingId !== b.id && !isLocked(b)) { startEdit(b, null); b.srcEl.scrollIntoView({ block: 'nearest' }); } });
       b.renderEl = rnd;
@@ -1091,6 +1123,51 @@
       renderPresence();
     }
 
+    // ----- Block version history (every publish is a revision, capped at 30) -----
+    async function openHistory(b) {
+      let revs;
+      try { revs = await (await apiFetch(`/api/blocks/${encodeURIComponent(b.id)}/revisions`)).json(); }
+      catch (_) { showToast('Could not load the history.'); return; }
+      dom.histList.innerHTML = '';
+      if (!Array.isArray(revs) || !revs.length) {
+        const d = document.createElement('div'); d.className = 'hist-empty';
+        d.textContent = 'No published versions yet — publish with Shift+Enter to start the history.';
+        dom.histList.appendChild(d);
+      } else {
+        revs.forEach((r, i) => {
+          const item = document.createElement('div'); item.className = 'hist-item';
+          const meta = document.createElement('div'); meta.className = 'h-meta';
+          const who = document.createElement('span');
+          who.textContent = `${r.author || '?'} · ${fmtTime(r.created_at)}${i === 0 ? ' · current' : ''}`;
+          meta.appendChild(who);
+          if (i !== 0) {
+            const btn = document.createElement('button'); btn.className = 'h-restore'; btn.textContent = 'Restore as draft';
+            btn.addEventListener('click', () => restoreRevision(b.id, r.content));
+            meta.appendChild(btn);
+          }
+          const pre = document.createElement('pre'); pre.textContent = r.content;
+          item.appendChild(meta); item.appendChild(pre);
+          dom.histList.appendChild(item);
+        });
+      }
+      dom.histModal.classList.remove('hidden');
+    }
+    function closeHistory() { dom.histModal.classList.add('hidden'); }
+    dom.histClose.addEventListener('click', closeHistory);
+    dom.histModal.addEventListener('click', (e) => { if (e.target === dom.histModal) closeHistory(); });
+    // Restoring never publishes by itself: the old version becomes YOUR draft in
+    // the editor, and only your explicit Shift+Enter makes it live again.
+    function restoreRevision(blockId, content) {
+      closeHistory();
+      const b = blocks.get(blockId);
+      if (!b) return;
+      if (isLocked(b)) { showToast('Someone is editing this block right now.'); return; }
+      if (editingId !== b.id) startEdit(b, null);
+      b.ta.value = content;
+      onMyInput(b);
+      showToast('Restored as your draft — review it, then Shift+Enter to publish.');
+    }
+
     // ----- Scroll sync between the two panes -----
     let scrollLock = false;
     function syncScroll(from, to) {
@@ -1154,11 +1231,62 @@
       topics.forEach((t) => {
         const div = document.createElement('div');
         div.className = 'topic' + (t.id === currentTopicId ? ' active' : '');
-        div.innerHTML = `<div class="t-title"></div><div class="t-meta">${fmtTime(t.created_at)}</div>`;
+        div.innerHTML = `<div class="t-title"></div><div class="t-meta">${fmtTime(t.created_at)}</div><button class="t-kebab" title="Rename or delete">⋯</button>`;
         div.querySelector('.t-title').textContent = t.title;
         div.addEventListener('click', () => selectTopic(t.id));
+        div.querySelector('.t-kebab').addEventListener('click', (e) => { e.stopPropagation(); toggleTopicMenu(div, t); });
         dom.topicList.appendChild(div);
       });
+    }
+
+    // ----- Topic management (rename / delete via the row's ⋯ menu) -----
+    function closeTopicMenus() { document.querySelectorAll('.t-menu').forEach((m) => m.remove()); }
+    document.addEventListener('click', closeTopicMenus);
+    function toggleTopicMenu(row, t) {
+      const wasOpen = !!row.querySelector('.t-menu');
+      closeTopicMenus();
+      if (wasOpen) return;
+      const menu = document.createElement('div');
+      menu.className = 't-menu';
+      const rename = document.createElement('button'); rename.textContent = '✏️ Rename';
+      const del = document.createElement('button'); del.textContent = '🗑 Delete topic'; del.className = 'danger';
+      rename.addEventListener('click', (e) => { e.stopPropagation(); closeTopicMenus(); startTopicRename(row, t); });
+      del.addEventListener('click', (e) => {
+        e.stopPropagation(); closeTopicMenus();
+        if (!confirm(`Delete topic "${t.title}" and all its blocks for everyone? This cannot be undone.`)) return;
+        socket.emit('topic:delete', { topicId: t.id }, (res) => {
+          if (res && res.ok === false) {
+            showToast(res.error === 'locked' ? `Can't delete — ${res.by || 'someone'} is editing in this topic.` : 'Could not delete the topic.');
+          }
+        });
+      });
+      menu.appendChild(rename); menu.appendChild(del);
+      row.appendChild(menu);
+    }
+    function startTopicRename(row, t) {
+      const titleEl = row.querySelector('.t-title');
+      const input = document.createElement('input');
+      input.value = t.title;
+      titleEl.textContent = '';
+      titleEl.appendChild(input);
+      input.focus(); input.select();
+      input.addEventListener('click', (e) => e.stopPropagation());
+      let settled = false;
+      const done = (commit) => {
+        if (settled) return; settled = true;
+        const v = input.value.trim();
+        if (commit && v && v !== t.title) {
+          titleEl.textContent = v;     // optimistic — the broadcast confirms for everyone
+          socket.emit('topic:rename', { topicId: t.id, title: v }, (res) => {
+            if (res && res.ok === false) { showToast('Rename failed.'); refreshTopics(); }
+          });
+        } else renderTopicList();
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); done(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); done(false); }
+      });
+      input.addEventListener('blur', () => done(true));
     }
     function createTopic() {
       const title = dom.topicInput.value.trim();
@@ -1284,6 +1412,24 @@
       if (err && err.message === 'unauthorized') { clearToken(); socket.disconnect(); openLoginModal(); }
     });
     socket.on('topic:created', (topic) => { if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); } });
+    socket.on('topic:renamed', ({ id, title }) => {
+      const t = topics.find((x) => x.id === id);
+      if (t) t.title = title;
+      renderTopicList();
+      if (currentTopicId === id) dom.topicTitle.textContent = title;
+    });
+    socket.on('topic:deleted', ({ id }) => {
+      topics = topics.filter((x) => x.id !== id);
+      renderTopicList();
+      if (currentTopicId === id) {
+        currentTopicId = null;
+        resetDoc();
+        dom.topicView.classList.add('hidden');
+        dom.exportWrap.classList.add('hidden');
+        dom.placeholder.classList.remove('hidden');
+        showToast('This topic was deleted.');
+      }
+    });
     // NB: events from my own ownerId are NOT filtered out — the server already
     // excludes the sending socket, so anything arriving with my id is my OTHER
     // tab/session (which must stay in sync) or a server-side force-publish of my

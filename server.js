@@ -122,8 +122,13 @@ const q = {
   topicById: db.prepare('SELECT * FROM topics WHERE id = ?'),
   insertTopic: db.prepare('INSERT INTO topics (title, created_at) VALUES (?, ?)'),
   // The shared document = every non-empty block, in reading order.
+  // A block mid-edit has its content WITHHELD here too — "composing…" content
+  // must never be readable via REST or the export while it's unpublished.
   blocksByTopic: db.prepare(
-    "SELECT * FROM blocks WHERE topic_id = ? AND content <> '' ORDER BY position ASC, created_at ASC, id ASC"
+    "SELECT id, topic_id, owner_id, author, " +
+    "CASE WHEN state = 'editing' THEN '' ELSE content END AS content, " +
+    "position, state, last_modified_by, created_at, updated_at " +
+    "FROM blocks WHERE topic_id = ? AND content <> '' ORDER BY position ASC, created_at ASC, id ASC"
   ),
   blockById: db.prepare('SELECT * FROM blocks WHERE id = ?'),
   insertBlock: db.prepare(
@@ -144,29 +149,26 @@ const LIMITS = {
   maxTitle: 120,
 };
 
-// Insert-or-update a block. ANYONE may edit any block; `editor` is the display
-// name of whoever is making this change (recorded as last_modified_by). Returns
-// the saved row (or null if the per-topic block cap is hit on insert).
+// Insert-or-update a block. Anyone may edit any block UNLESS another identity
+// holds its editing lock (checked by the socket handlers); `editor` is the
+// display name of whoever is making this change (recorded as last_modified_by).
+// Returns { row, error } — error is a machine-readable reason for the ack:
+// 'no-topic' | 'empty' | 'cap'. Updates keep the row's real topic; a forged
+// topicId can't move a block or desync the room broadcast.
 function saveBlock({ id, topicId, ownerId, editor, content, position, state }) {
   const now = new Date().toISOString();
   const st = state === 'editing' ? 'editing' : 'published';
+  if (!String(content).trim()) return { row: null, error: 'empty' }; // never store invisible blocks
   const existing = q.blockById.get(id);
   if (existing) {
     q.updateBlock.run(content, st, editor, now, id);
   } else {
-    if (!q.topicById.get(topicId)) return null; // no such topic → don't create orphan blocks
-    if (q.countBlocksInTopic.get(topicId).n >= LIMITS.maxBlocksPerTopic) return null; // cap reached
-    q.insertBlock.run(id, topicId, ownerId, editor, content, Number(position) || 0, st, editor, now, now);
+    if (!q.topicById.get(topicId)) return { row: null, error: 'no-topic' }; // don't create orphan blocks
+    if (q.countBlocksInTopic.get(topicId).n >= LIMITS.maxBlocksPerTopic) return { row: null, error: 'cap' };
+    const pos = Number(position);
+    q.insertBlock.run(id, topicId, ownerId, editor, content, Number.isFinite(pos) ? pos : 0, st, editor, now, now);
   }
-  return q.blockById.get(id);
-}
-
-// Delete a block — anyone may. Returns true if removed.
-function removeBlock(id) {
-  const existing = q.blockById.get(id);
-  if (!existing) return false;
-  q.deleteBlock.run(id);
-  return true;
+  return { row: q.blockById.get(id), error: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +249,8 @@ app.get('/api/topics/:id/document', requireAuth, (req, res) => {
     title: topic.title,
     created_at: topic.created_at,
     blocks, // [{ id, owner_id, author, content, position, created_at, updated_at }]
-    markdown: blocks.map((b) => b.content).join('\n\n'),
+    // Mid-edit blocks are masked to '' by the query — drop them from the export.
+    markdown: blocks.map((b) => b.content).filter(Boolean).join('\n\n'),
   });
 });
 
@@ -272,17 +275,77 @@ app.use((err, req, res, next) => {
 // Socket.io real-time layer
 // ---------------------------------------------------------------------------
 const server = http.createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 256 * 1024 }); // bound inbound payloads
+// Bound inbound payloads. Must comfortably exceed maxContent in BYTES: 100k
+// characters can be ~400KB as UTF-8, and engine.io kills the connection (it
+// doesn't just drop the packet) when a frame exceeds this.
+const io = new Server(server, { maxHttpBufferSize: 1024 * 1024 });
 
-// Realtime auth: when a password is set, every socket must present the token.
+// Realtime auth + identity: when a password is set, every socket must present
+// the token. The client's stable identity (ownerId) and display name are bound
+// to the socket ONCE at the handshake — block handlers use these, never the
+// per-event payload, so one client can't impersonate another or release
+// someone else's editing lock by forging event fields.
 io.use((socket, next) => {
+  const a = socket.handshake.auth || {};
+  socket.data.ownerId = String(a.ownerId || '').slice(0, 64);
+  socket.data.name = String(a.name || '').slice(0, 60);
   if (!AUTH_REQUIRED) return next();
-  const tok = (socket.handshake.auth && socket.handshake.auth.token) || '';
-  if (safeEqual(tok, AUTH_TOKEN)) return next();
+  if (safeEqual(a.token || '', AUTH_TOKEN)) return next();
   next(new Error('unauthorized'));
 });
 
 const roomName = (topicId) => `topic:${topicId}`;
+
+// ---------------------------------------------------------------------------
+// Server-enforced editing locks. A block being edited is locked to ONE identity
+// (ownerId): update/publish/delete from anyone else is rejected with an ack, so
+// "two people never touch the same text" holds even against racing or crafted
+// clients — the client-side isLocked check is now just UX, not the enforcement.
+//
+// Lifecycle: claimed/refreshed on block:update, released on publish/delete.
+// On disconnect the holder gets a grace window (EDIT_GRACE_MS) to reconnect and
+// re-claim before the draft is force-published — a network blip no longer leaks
+// the withheld draft to the room. If another live socket shares the identity
+// (same user, another tab), the lock is handed over instead of published.
+// ---------------------------------------------------------------------------
+const EDIT_GRACE_MS = Number(process.env.EDIT_GRACE_MS) || 8000;
+const editLocks = new Map(); // blockId -> { ownerId, name, socketId, at, grace }
+
+function ownerSocket(ownerId, exceptId) {
+  for (const s of io.of('/').sockets.values()) {
+    if (s.id !== exceptId && s.data.ownerId && s.data.ownerId === ownerId) return s;
+  }
+  return null;
+}
+
+// Release a lock and publish whatever draft content the row holds (the editor
+// is gone for good — peers must stop seeing the "modifying…" overlay).
+function releaseAndPublish(blockId) {
+  const lock = editLocks.get(blockId);
+  if (!lock) return;
+  if (lock.grace) clearTimeout(lock.grace);
+  editLocks.delete(blockId);
+  const existing = q.blockById.get(blockId);
+  if (existing && existing.state === 'editing') {
+    const { row } = saveBlock({
+      id: blockId, topicId: existing.topic_id, ownerId: existing.owner_id,
+      editor: existing.last_modified_by, content: existing.content,
+      position: existing.position, state: 'published',
+    });
+    if (row) io.to(roomName(existing.topic_id)).emit('block:publish', publishPayload(existing.topic_id, row, lock.ownerId));
+  }
+}
+
+// Safety net: reap locks whose holder has no live connection at all (missed
+// disconnect events, crashed processes). Locks held by CONNECTED owners are
+// left alone — a blurred draft may legitimately sit unpublished for hours.
+const lockSweeper = setInterval(() => {
+  for (const [blockId, lock] of editLocks) {
+    if (lock.grace) continue; // departure already being handled by its grace timer
+    if (!ownerSocket(lock.ownerId)) releaseAndPublish(blockId);
+  }
+}, 60000);
+lockSweeper.unref();
 
 // Per-socket fixed-window rate limiter. Returns false when the caller should
 // drop the event. Keeps one server from being flooded by a single connection.
@@ -307,17 +370,20 @@ async function broadcastUsers(room) {
 }
 
 io.on('connection', (socket) => {
-  socket.data.name = null;
   socket.data.topicId = null;
 
   // Wrap every handler: a malformed event or a transient DB error logs and drops,
-  // it never takes down the process.
+  // it never takes down the process. Every write handler takes an optional ack
+  // callback as its last argument and ALWAYS answers it — the client must never
+  // be left believing a rejected write was saved.
   const on = (event, fn) => socket.on(event, async (...args) => {
     try { await fn(...args); } catch (err) { console.error(`socket '${event}' failed:`, err && err.message); }
   });
+  const reply = (ack, payload) => { if (typeof ack === 'function') ack(payload); };
 
   // A user opens a topic.
-  on('topic:join', async ({ topicId, name }) => {
+  on('topic:join', async (payload) => {
+    const { topicId, name, ownerId } = payload || {};
     if (!topicId || !name) return;
     if (!rateLimit(socket, 'join', 40, 10000)) return;
 
@@ -329,6 +395,9 @@ io.on('connection', (socket) => {
     }
 
     socket.data.name = String(name).slice(0, 60);
+    // Identity normally arrives in the handshake; accept it here only if the
+    // handshake didn't carry one (it never changes for the life of the socket).
+    if (!socket.data.ownerId && ownerId) socket.data.ownerId = String(ownerId).slice(0, 64);
     socket.data.topicId = topicId;
 
     const room = roomName(topicId);
@@ -338,32 +407,46 @@ io.on('connection', (socket) => {
   });
 
   // Anyone can create a topic; broadcast to every connected client.
-  on('topic:create', ({ title }) => {
-    const clean = String(title || '').trim();
-    if (!clean) return;
-    if (!rateLimit(socket, 'topicCreate', 8, 60000)) return;
-    if (q.countTopics.get().n >= LIMITS.maxTopics) return; // cap reached
+  on('topic:create', (payload, ack) => {
+    const clean = String((payload && payload.title) || '').trim();
+    if (!clean) return reply(ack, { ok: false, error: 'invalid' });
+    if (!rateLimit(socket, 'topicCreate', 8, 60000)) return reply(ack, { ok: false, error: 'rate' });
+    if (q.countTopics.get().n >= LIMITS.maxTopics) return reply(ack, { ok: false, error: 'cap' });
     const info = q.insertTopic.run(clean.slice(0, LIMITS.maxTitle), new Date().toISOString());
     const topic = q.topicById.get(info.lastInsertRowid);
     io.emit('topic:created', topic);
+    reply(ack, { ok: true, topic });
   });
 
-  // EDITING a block (anyone may edit any block). Persist the in-progress content
-  // for durability but DON'T relay it — peers only learn who's modifying it, and
-  // can't grab a block someone else is actively editing.
-  on('block:update', ({ topicId, id, ownerId, author, content, position }) => {
-    const editorId = String(ownerId || '').trim(); // who is editing (stable id)
-    const editor = String(author || '').trim();     // editor's display name
+  // EDITING a block. Persist the in-progress content for durability but DON'T
+  // relay it — peers only learn who's modifying it. The block's lock is claimed
+  // here; updates from anyone else are rejected until the holder lets go.
+  on('block:update', (payload, ack) => {
+    const { topicId, id, content, position } = payload || {};
+    const editorId = socket.data.ownerId;
+    const editor = socket.data.name || '';
     const blockId = String(id || '').trim();
-    if (!topicId || !editor || !blockId) return;
-    if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return;
-    const body = String(content == null ? '' : content).slice(0, LIMITS.maxContent);
+    if (!topicId || !editorId || !editor || !blockId) return reply(ack, { ok: false, error: 'invalid' });
+    if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return reply(ack, { ok: false, error: 'rate' });
+    const raw = String(content == null ? '' : content);
+    const body = raw.slice(0, LIMITS.maxContent);
 
-    const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'editing' });
-    if (!row) return;
-    (socket.data.editing || (socket.data.editing = new Map())).set(blockId, Number(topicId));
-    socket.to(roomName(topicId)).emit('block:update', {
-      topicId: Number(topicId),
+    const lock = editLocks.get(blockId);
+    if (lock && lock.ownerId !== editorId) return reply(ack, { ok: false, error: 'locked', by: lock.name });
+
+    const { row, error } = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'editing' });
+    if (!row) return reply(ack, { ok: false, error });
+    // Claim or refresh the lock (a reconnected session re-claims here, which
+    // cancels any pending disconnect grace timer from its dead predecessor).
+    if (lock) {
+      if (lock.grace) { clearTimeout(lock.grace); lock.grace = null; }
+      lock.socketId = socket.id; lock.at = Date.now(); lock.name = editor;
+    } else {
+      editLocks.set(blockId, { ownerId: editorId, name: editor, socketId: socket.id, at: Date.now(), grace: null });
+    }
+    (socket.data.editing || (socket.data.editing = new Set())).add(blockId);
+    socket.to(roomName(row.topic_id)).emit('block:update', {
+      topicId: row.topic_id,
       id: row.id,
       editor_id: editorId,
       last_modified_by: row.last_modified_by,
@@ -371,43 +454,71 @@ io.on('connection', (socket) => {
       updated_at: row.updated_at,
       state: 'editing', // peers show "<editor> is modifying…" — content withheld
     });
+    reply(ack, { ok: true, updated_at: row.updated_at, truncated: raw.length > body.length });
   });
 
-  // PUBLISH: the editor finished (Shift+Enter / moved off). Relay the content.
-  on('block:publish', ({ topicId, id, ownerId, author, content, position }) => {
-    const editorId = String(ownerId || '').trim();
-    const editor = String(author || '').trim();
+  // PUBLISH: the editor finished (Shift+Enter / moved off). Relay the content
+  // and release the lock.
+  on('block:publish', (payload, ack) => {
+    const { topicId, id, content, position } = payload || {};
+    const editorId = socket.data.ownerId;
+    const editor = socket.data.name || '';
     const blockId = String(id || '').trim();
-    if (!topicId || !editor || !blockId) return;
-    if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return;
-    const body = String(content == null ? '' : content).slice(0, LIMITS.maxContent);
+    if (!topicId || !editorId || !editor || !blockId) return reply(ack, { ok: false, error: 'invalid' });
+    if (!rateLimit(socket, 'blockUpdate', 30, 1000)) return reply(ack, { ok: false, error: 'rate' });
+    const raw = String(content == null ? '' : content);
+    const body = raw.slice(0, LIMITS.maxContent);
 
-    const row = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'published' });
-    if (!row) return;
+    const lock = editLocks.get(blockId);
+    if (lock && lock.ownerId !== editorId) return reply(ack, { ok: false, error: 'locked', by: lock.name });
+
+    const { row, error } = saveBlock({ id: blockId, topicId: Number(topicId), ownerId: editorId, editor, content: body, position, state: 'published' });
+    if (!row) return reply(ack, { ok: false, error });
+    if (lock) { if (lock.grace) clearTimeout(lock.grace); editLocks.delete(blockId); }
     if (socket.data.editing) socket.data.editing.delete(blockId);
-    socket.to(roomName(topicId)).emit('block:publish', publishPayload(topicId, row, editorId));
+    socket.to(roomName(row.topic_id)).emit('block:publish', publishPayload(row.topic_id, row, editorId));
+    reply(ack, { ok: true, updated_at: row.updated_at, truncated: raw.length > body.length });
   });
 
-  // Delete a block — anyone may.
-  on('block:delete', ({ topicId, id }) => {
+  // Delete a block — anyone may, unless someone else is mid-edit in it.
+  on('block:delete', (payload, ack) => {
+    const { id } = payload || {};
     const blockId = String(id || '').trim();
-    if (!topicId || !blockId) return;
-    if (!rateLimit(socket, 'blockDelete', 30, 5000)) return;
-    if (removeBlock(blockId)) {
-      if (socket.data.editing) socket.data.editing.delete(blockId);
-      socket.to(roomName(topicId)).emit('block:delete', { topicId: Number(topicId), id: blockId });
-    }
+    if (!blockId) return reply(ack, { ok: false, error: 'invalid' });
+    if (!rateLimit(socket, 'blockDelete', 30, 5000)) return reply(ack, { ok: false, error: 'rate' });
+    const lock = editLocks.get(blockId);
+    if (lock && lock.ownerId !== socket.data.ownerId) return reply(ack, { ok: false, error: 'locked', by: lock.name });
+    const existing = q.blockById.get(blockId);
+    if (!existing) return reply(ack, { ok: true, missing: true });
+    q.deleteBlock.run(blockId);
+    if (lock) { if (lock.grace) clearTimeout(lock.grace); editLocks.delete(blockId); }
+    if (socket.data.editing) socket.data.editing.delete(blockId);
+    // Broadcast to the block's REAL topic room (never the payload's claim).
+    socket.to(roomName(existing.topic_id)).emit('block:delete', { topicId: existing.topic_id, id: blockId });
+    reply(ack, { ok: true });
   });
 
   on('disconnect', async () => {
-    // Publish anything this socket left mid-edit so peers stop seeing the overlay.
+    // Blocks this socket left mid-edit: give the same identity a grace window
+    // to reconnect (or hand the lock to their other open tab) before the draft
+    // is force-published. A wifi blip must not broadcast withheld content.
     if (socket.data.editing) {
-      for (const [blockId, topicId] of socket.data.editing) {
-        const existing = q.blockById.get(blockId);
-        if (existing && existing.state === 'editing') {
-          const row = saveBlock({ id: blockId, topicId, ownerId: existing.owner_id, editor: existing.last_modified_by, content: existing.content, position: existing.position, state: 'published' });
-          if (row) io.to(roomName(topicId)).emit('block:publish', publishPayload(topicId, row, ''));
-        }
+      for (const blockId of socket.data.editing) {
+        const lock = editLocks.get(blockId);
+        if (!lock || lock.socketId !== socket.id) continue; // a newer session already took over
+        if (lock.grace) clearTimeout(lock.grace);
+        lock.grace = setTimeout(() => {
+          const cur = editLocks.get(blockId);
+          if (!cur || cur.socketId !== socket.id) return;   // re-claimed meanwhile
+          const heir = ownerSocket(cur.ownerId, socket.id);
+          if (heir) {                                        // same person, another tab/session
+            cur.socketId = heir.id; cur.grace = null; cur.at = Date.now();
+            (heir.data.editing || (heir.data.editing = new Set())).add(blockId);
+            return;
+          }
+          releaseAndPublish(blockId);                        // truly gone → publish the draft
+        }, EDIT_GRACE_MS);
+        if (lock.grace.unref) lock.grace.unref();
       }
     }
     if (!socket.data.topicId) return;

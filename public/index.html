@@ -494,6 +494,23 @@
     let autoSaveDirty = false, autoSaveLast = 0, autoSaveNext = 0, autoSaveTimer = null, autoSaveTick = null, myEditVerb = '';
     let lastPersistAt = 0;           // last time anything was persisted (survives edit-session resets) — for the idle "saved" time
 
+    // The save bar tells the truth: every write is acknowledged by the server,
+    // and "saved" is only claimed once the ack lands. A rejected write (topic
+    // full, block locked, …) or a dead connection shows a warning instead.
+    const MAX_CONTENT = 100000;      // mirror of the server's per-block character limit
+    let pendingSaves = 0;            // writes emitted but not yet acknowledged
+    let saveError = '';              // last rejection reason ('' = none)
+    const SAVE_ERRORS = {
+      locked: 'someone else is editing this block',
+      cap: 'this topic is full — block limit reached',
+      'no-topic': 'this topic no longer exists',
+      rate: 'too many updates — slow down a moment',
+      truncated: 'block hit the 100,000-character limit; extra text was not saved',
+      empty: 'empty blocks are not stored',
+      invalid: 'the server rejected this change',
+      error: 'server error — will retry',
+    };
+
     // A little fun: a random present-participle while someone edits a block.
     const VERBS = ['cooking', 'brewing', 'crafting', 'conjuring', 'noodling', 'tinkering',
       'sculpting', 'wrangling', 'simmering', 'percolating', 'forging', 'doodling',
@@ -648,6 +665,7 @@
         b.srcEl.classList.add('editing');
         b.srcContent.innerHTML = '<div class="code-edit"><div class="ln-col"></div><textarea spellcheck="true"></textarea></div>';
         const ta = b.srcContent.querySelector('textarea');
+        ta.maxLength = MAX_CONTENT;   // hard cap in the UI — the server truncates beyond this
         ta.value = b.content;
         b.ta = ta;
         ta.addEventListener('input', () => onMyInput(b));
@@ -761,7 +779,7 @@
       b.state = 'editing';
       b.draftByMe = true;           // it's my unpublished draft until I hit Shift+Enter
       b.last_modified_by = myName;  // I'm now the editor
-      autoSaveLast = 0; autoSaveDirty = false;  // fresh edit session
+      autoSaveLast = 0; autoSaveDirty = false; saveError = '';  // fresh edit session
       if (b.synced) rawEdit(b);     // existing block → peers see "<me> is modifying" now
       renderSrc(b);
       renumber();
@@ -905,14 +923,31 @@
 
     // ----- Emit -----
     // block:update = "I'm editing this" — server stores my draft but withholds it
-    // from peers. block:publish = "render it now" with content.
+    // from peers. block:publish = "render it now" with content. Identity rides on
+    // the socket handshake, not these payloads, so the server binds every write
+    // to who we really are. Each write carries an ack; the save bar reflects it.
     const emitState = new Map();
+    function onWriteAck(b, res) {
+      pendingSaves = Math.max(0, pendingSaves - 1);
+      if (!res || res.ok !== true) {
+        saveError = (res && res.error) || 'error';
+        autoSaveDirty = true;                  // re-send on the next auto-save pass
+        updateAutoSaveBar();
+        return;
+      }
+      saveError = res.truncated ? 'truncated' : '';
+      if (b && res.updated_at) b.srvStamp = res.updated_at;   // authoritative server clock
+      autoSaveLast = Date.now(); lastPersistAt = autoSaveLast;
+      updateAutoSaveBar();
+    }
     function rawEdit(b) {
       if (!currentTopicId) return;
-      socket.emit('block:update', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
-      b.synced = true;
-      autoSaveLast = Date.now(); lastPersistAt = autoSaveLast; autoSaveDirty = false;  // this IS a save
+      pendingSaves += 1;
+      socket.emit('block:update', { topicId: currentTopicId, id: b.id, content: b.content, position: b.position }, (res) => onWriteAck(b, res));
+      b.synced = true;                                   // the create/update event is on its way
+      autoSaveDirty = false;                             // we sent the latest content; new input re-dirties
       if (editingId === b.id) pushSnapshot(b.content);   // each save is an Esc-able checkpoint
+      updateAutoSaveBar();
     }
     function pushSnapshot(c) {
       if (!editStack.length || editStack[editStack.length - 1] !== c) editStack.push(c);
@@ -945,48 +980,75 @@
     // is persisted: a steady "all changes saved" when idle, live status while editing.
     function updateAutoSaveBar() {
       const bar = dom.autosaveBar;
+      // Truth first: a dead connection or a rejected write overrides any "saved" claim.
+      if (everConnected && !socket.connected) {
+        bar.classList.remove('saved');
+        bar.textContent = '⚠ Offline — recent changes are not saved yet';
+        return;
+      }
+      if (saveError) {
+        bar.classList.remove('saved');
+        bar.textContent = '⚠ Not saved — ' + (SAVE_ERRORS[saveError] || saveError);
+        return;
+      }
       if (!editingId) {
+        if (pendingSaves > 0) { bar.classList.remove('saved'); bar.textContent = 'Saving…'; return; }
         bar.classList.add('saved');
         bar.textContent = lastPersistAt ? `✓ All changes saved · ${fmtClock(lastPersistAt)}` : '✓ All changes saved';
         return;
       }
       const inS = Math.max(0, Math.ceil((autoSaveNext - Date.now()) / 1000));
       const verb = myEditVerb ? myEditVerb[0].toUpperCase() + myEditVerb.slice(1) : 'Editing';
-      const saved = autoSaveLast ? `saved ${fmtClock(autoSaveLast)}` : 'not saved yet';
+      const busy = autoSaveDirty || pendingSaves > 0;
+      const saved = pendingSaves > 0 ? 'saving…' : (autoSaveLast ? `saved ${fmtClock(autoSaveLast)}` : 'not saved yet');
       const cp = editStack.length > 1 ? ` · ${editStack.length} checkpoints · Esc steps back` : ' · Esc to cancel';
-      bar.classList.toggle('saved', !autoSaveDirty);
-      bar.textContent = `🍳 ${verb}… ${autoSaveDirty ? '·' : '✓'} ${saved} · next save in ${inS}s${cp}`;
+      bar.classList.toggle('saved', !busy);
+      bar.textContent = `🍳 ${verb}… ${busy ? '·' : '✓'} ${saved} · next save in ${inS}s${cp}`;
     }
 
     function publishEmit(b) {
       const st = emitState.get(b.id); if (st && st.timer) { clearTimeout(st.timer); st.timer = null; }
       if (!currentTopicId) return;
-      socket.emit('block:publish', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId, author: myName, content: b.content, position: b.position });
+      pendingSaves += 1;
+      socket.emit('block:publish', { topicId: currentTopicId, id: b.id, content: b.content, position: b.position }, (res) => onWriteAck(b, res));
       b.synced = true;
-      autoSaveLast = Date.now(); lastPersistAt = autoSaveLast;
+      updateAutoSaveBar();
     }
-    function emitDelete(b) { const st = emitState.get(b.id); if (st && st.timer) clearTimeout(st.timer); emitState.delete(b.id); if (currentTopicId) socket.emit('block:delete', { topicId: currentTopicId, id: b.id, ownerId: myOwnerId }); }
+    function emitDelete(b) {
+      const st = emitState.get(b.id); if (st && st.timer) clearTimeout(st.timer); emitState.delete(b.id);
+      if (!currentTopicId) return;
+      socket.emit('block:delete', { topicId: currentTopicId, id: b.id }, (res) => {
+        // Rejected (someone else holds its lock) → our local removal was wrong; re-sync.
+        if (res && res.ok === false && currentTopicId) loadBlocks(currentTopicId);
+      });
+    }
 
     // ----- Remote changes -----
     // editOrPublish=true means content is present (a publish). Otherwise it's an
     // edit notice (no content) — keep what we have but mark the block 'editing'.
     function applyRemoteBlock(msg, published) {
+      // NEVER touch the block under my cursor: a remote event must not rebuild
+      // the focused textarea or replace what I'm typing. (The server's lock
+      // makes foreign events for it impossible; this also covers my own other
+      // sessions and the disconnect force-publish racing a reconnect.)
+      if (editingId === msg.id) return;
       let b = blocks.get(msg.id);
-      // Monotonic by updated_at: never apply an event older than what we have.
-      if (b && b.updated_at && msg.updated_at && msg.updated_at < b.updated_at) return;
+      // Monotonic by SERVER timestamp only — comparing the browser clock to the
+      // server clock would silently drop peers' events under clock skew.
+      if (b && b.srvStamp && msg.updated_at && msg.updated_at < b.srvStamp) return;
       const wasEditing = b && b.state === 'editing';
       if (!b) {
-        b = { id: msg.id, last_modified_by: msg.last_modified_by, author: msg.last_modified_by, content: published ? msg.content : '', position: msg.position, updated_at: msg.updated_at, synced: true, state: published ? 'published' : 'editing', verb: published ? null : randomVerb() };
+        b = { id: msg.id, last_modified_by: msg.last_modified_by, author: msg.last_modified_by, content: published ? msg.content : '', position: msg.position, updated_at: msg.updated_at, srvStamp: msg.updated_at, synced: true, state: published ? 'published' : 'editing', verb: published ? null : randomVerb() };
         blocks.set(b.id, b);
         makeBlock(b);
         placeBlock(b);
         ensureAffordances();   // clears the empty-state hint when a live block arrives
       } else {
-        b.updated_at = msg.updated_at; b.position = msg.position; b.last_modified_by = msg.last_modified_by;
+        b.updated_at = msg.updated_at; b.srvStamp = msg.updated_at; b.position = msg.position; b.last_modified_by = msg.last_modified_by;
         // Pick a fresh verb each time a block (re)enters someone's edit; keep it steady mid-edit.
         if (published) b.verb = null; else if (!wasEditing || !b.verb) b.verb = randomVerb();
         b.state = published ? 'published' : 'editing';
-        if (published) b.content = msg.content;   // editing notices carry no content
+        if (published) { b.content = msg.content; b.draftByMe = false; } // editing notices carry no content
         renderSrc(b);
         renumber();
       }
@@ -1015,6 +1077,7 @@
       const name = dom.nameInput.value.trim();
       if (name.length < 2) { dom.nameErr.textContent = 'Please enter at least 2 characters.'; return; }
       myName = name; localStorage.setItem(NAME_KEY, name);
+      socket.auth = Object.assign({}, socket.auth, { name: myName });  // future reconnects carry the name
       dom.brandSub.textContent = 'you are ' + name;
       closeNameModal();
       if (currentTopicId) joinTopicRoom();
@@ -1065,7 +1128,12 @@
     function createTopic() {
       const title = dom.topicInput.value.trim();
       if (!title) return;
-      socket.emit('topic:create', { title });
+      socket.emit('topic:create', { title }, (res) => {
+        if (res && res.ok === false) {
+          alert(res.error === 'cap' ? 'This server has reached its topic limit.' :
+            res.error === 'rate' ? 'Slow down — too many topics created at once.' : 'Could not create the topic.');
+        }
+      });
       dom.topicInput.value = '';
     }
     dom.topicCreate.addEventListener('click', createTopic);
@@ -1073,6 +1141,7 @@
 
     function resetDoc() {
       blocks.clear(); editingId = null; stopAutoSave(); autoSaveLast = 0; autoSaveDirty = false;
+      pendingSaves = 0; saveError = '';   // stale ack bookkeeping must not leak across topics
       emitState.forEach((s) => s.timer && clearTimeout(s.timer)); emitState.clear();
       dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';
       renderPresence();
@@ -1092,7 +1161,7 @@
       joinTopicRoom();
       loadBlocks(id);
     }
-    function joinTopicRoom() { if (currentTopicId && myName) socket.emit('topic:join', { topicId: currentTopicId, name: myName }); }
+    function joinTopicRoom() { if (currentTopicId && myName) socket.emit('topic:join', { topicId: currentTopicId, name: myName, ownerId: myOwnerId }); }
 
     async function loadBlocks(id) {
       loadBuffer = [];                 // capture live block events that arrive during the fetch
@@ -1105,7 +1174,7 @@
         // Any block still 'editing' on load is held by someone else (my own drafts
         // were auto-published when my previous session ended) → withhold content.
         const state = row.state === 'editing' ? 'editing' : 'published';
-        const b = { id: row.id, owner_id: row.owner_id, author: row.author, last_modified_by: row.last_modified_by, content: (state === 'editing') ? '' : row.content, position: row.position, updated_at: row.updated_at, synced: true, state };
+        const b = { id: row.id, owner_id: row.owner_id, author: row.author, last_modified_by: row.last_modified_by, content: (state === 'editing') ? '' : row.content, position: row.position, updated_at: row.updated_at, srvStamp: row.updated_at, synced: true, state };
         blocks.set(b.id, b);
         makeBlock(b);
         dom.sourceInner.appendChild(b.srcEl);
@@ -1147,13 +1216,17 @@
       if (err && err.message === 'unauthorized') { clearToken(); socket.disconnect(); openLoginModal(); }
     });
     socket.on('topic:created', (topic) => { if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); } });
+    // NB: events from my own ownerId are NOT filtered out — the server already
+    // excludes the sending socket, so anything arriving with my id is my OTHER
+    // tab/session (which must stay in sync) or a server-side force-publish of my
+    // block. applyRemoteBlock's editingId guard protects the one I'm typing in.
     socket.on('block:update', (msg) => {   // someone is editing (no content)
-      if (msg.topicId !== currentTopicId || msg.editor_id === myOwnerId) return;
+      if (msg.topicId !== currentTopicId) return;
       if (loadBuffer) { loadBuffer.push({ type: 'edit', msg }); return; } // mid-load → queue
       applyRemoteBlock(msg, false);
     });
     socket.on('block:publish', (msg) => {  // someone published (with content)
-      if (msg.topicId !== currentTopicId || msg.editor_id === myOwnerId) return;
+      if (msg.topicId !== currentTopicId) return;
       if (loadBuffer) { loadBuffer.push({ type: 'publish', msg }); return; } // mid-load → queue
       applyRemoteBlock(msg, true);
     });
@@ -1171,6 +1244,7 @@
       dom.connStatus.classList.add('hidden');     // (re)connected
       const reconnected = everConnected;
       everConnected = true;
+      updateAutoSaveBar();                         // leave the "offline" warning state
       if (!currentTopicId) return;
       joinTopicRoom();                             // re-enter the topic room
       // After a drop we may have missed live events. Re-sync from the server —
@@ -1181,6 +1255,7 @@
       // Ignore deliberate client-side disconnects (e.g. logout); Socket.io will
       // auto-reconnect from any real drop, and this pill shows until it does.
       if (reason !== 'io client disconnect') dom.connStatus.classList.remove('hidden');
+      updateAutoSaveBar();                         // stop claiming "saved" while offline
     });
 
     // ===================================================================
@@ -1268,7 +1343,9 @@
     }
     // Connect the socket (with the token, if any) and load the topic list.
     async function startApp() {
-      socket.auth = { token: authToken };
+      // Identity is bound to the socket at the handshake — the server keys the
+      // editing locks and event attribution on this, never on event payloads.
+      socket.auth = { token: authToken, ownerId: myOwnerId, name: myName };
       socket.connect();
       if (myName) dom.brandSub.textContent = 'you are ' + myName; else openNameModal();
       try { topics = await (await apiFetch('/api/topics')).json(); } catch (e) { topics = []; }

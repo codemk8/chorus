@@ -42,8 +42,9 @@ see the [README](README.md).
   back through the saved snapshots, and a final `Esc` at the starting point cancels
   the edit (reverting an existing block to its last-published text, or removing a
   brand-new one). You always see your own live render (with real Markdown/Mermaid
-  syntax errors). If you disconnect mid-edit, the server publishes your draft so no
-  one is stuck behind the overlay.
+  syntax errors). If you disconnect mid-edit and don't come back within a short
+  grace window, the server publishes your draft so no one is stuck behind the
+  overlay — a brief network blip keeps your edit (and its lock) intact.
 - **One shared document, owned by blocks** — the document is ordered paragraphs
   ("blocks"). While editing a line, press **Enter** to start a new line below (and
   jump to it), **Shift+Enter** for a line break within the line. **Enter inside a
@@ -51,12 +52,14 @@ see the [README](README.md).
   You can also click the `＋` at the start (left edge) of any line to insert below;
   an empty topic shows a one-click **＋ Add a line** prompt. Lines left empty are
   dropped automatically.
-- **Anyone can edit any block, with a soft lock** — **double-click** any block to
-  edit it. While you're editing, that block is locked: others see an overlay
-  ("_<you> is cooking…_", with a randomized fun verb) and can't grab it until you
-  publish. So there's only ever one editor per block at a time — collision-free in
-  practice, without a CRDT — and each block records **`last_modified_by`** (the
-  chip + color follow whoever last touched it).
+- **Anyone can edit any block, with a server-enforced lock** — **double-click**
+  any block to edit it. While you're editing, that block is locked **on the
+  server**: any write or delete for it from another identity is rejected with an
+  explicit error, and others see an overlay ("_<you> is cooking…_", with a
+  randomized fun verb) until you publish. So there's only ever one editor per
+  block at a time — collision-free by construction, without a CRDT — and each
+  block records **`last_modified_by`** (the chip + color follow whoever last
+  touched it).
 - **Robust live rendering** — incomplete Markdown/Mermaid never breaks the view:
   diagrams are pre-validated, last-good renders are cached to avoid flicker, and
   a **spinner** marks a block (and any half-written diagram) while it's being
@@ -73,9 +76,12 @@ see the [README](README.md).
   and replayed** after the initial snapshot (no lost blocks), and updates are
   applied **monotonically by timestamp** so out-of-order delivery can't regress a
   block.
-- **Auto-saved drafts** — while you edit, the draft is persisted to the server on
-  a periodic cycle (every 5s) and a footnote in the header shows the last save time
-  and a countdown to the next. A disconnect mid-edit publishes your last saved draft.
+- **Auto-saved drafts, honestly reported** — while you edit, the draft is
+  persisted to the server on a periodic cycle (every 5s); the header bar shows the
+  last save time and a countdown to the next, and it only says **saved** once the
+  server has acknowledged the write — if you're offline or a write is rejected,
+  it says that instead. A disconnect mid-edit publishes your last saved draft
+  after a short grace window.
 - **Persistent** — blocks are stored in SQLite (`better-sqlite3`) with a
   fractional `position` for ordering; the whole document is restored on page load.
 - **Export** — a top-right **Export** menu downloads the topic as a raw
@@ -100,15 +106,27 @@ The whole UI — chrome, code highlighting, and Mermaid diagrams — recolors in
 Real-time collaborative editors usually reach for a **CRDT or OT** engine to merge
 concurrent edits to the same text. Chorus sidesteps that entirely with one rule:
 
-> **A document is an ordered list of blocks, and each block is owned by exactly one
-> person. You can only edit your own blocks.**
+> **A document is an ordered list of blocks, and each block has exactly one
+> editor at a time. Anyone may edit any block — but never simultaneously.**
 
-Because no two people ever edit the same characters, **there's nothing to merge** —
-edits can't conflict by construction. That makes the whole sync layer simple:
+Because no two people ever edit the same characters at the same time, **there's
+nothing to merge** — edits can't conflict by construction. That makes the whole
+sync layer simple:
 
-- **Ownership** is keyed on a stable per-browser `owner_id` (not the display name),
-  and **enforced on the server** for every write — you can't edit or delete a block
-  you don't own, and renaming yourself keeps your blocks.
+- **Identity** is a stable per-browser `owner_id` (not the display name), bound
+  to the socket **at the handshake** — event payloads can't impersonate anyone,
+  and renaming yourself keeps your attribution.
+- **The editing lock is enforced on the server**: the moment you start editing a
+  block it's locked to your identity; updates, publishes, and deletes from anyone
+  else are rejected (with a `locked` ack) until you publish or leave. A network
+  blip doesn't lose the lock — the server holds a grace window for the same
+  identity to reconnect before it force-publishes the draft.
+- **Every write is acknowledged.** A write that's rejected (block locked, topic
+  full, content truncated) comes back in the ack, and the client's save bar says
+  so — the UI never claims "saved" for a write the server refused.
+- **Drafts are withheld server-side**: a block mid-edit returns empty content via
+  the REST API and is excluded from the Markdown export until published — peers
+  can't read your half-typed thoughts even with `curl`.
 - **Ordering** uses a fractional `position` (insert between `a` and `b` at
   `(a+b)/2`), so inserting/deleting a line is a single-row op with **no
   renumbering**.

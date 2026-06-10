@@ -362,9 +362,17 @@ password you're willing to share or treat `--no-auth` as an open, disposable san
 `npm test` runs an end-to-end suite (`node --test`) that spawns the real server with
 a throwaway DB and a known password, then exercises the HTTP API, auth gating, the
 security headers, and the realtime invariants: draft withholding (socket + REST),
-server-side editing locks, acknowledged writes at every cap, and the
-disconnect-grace / reconnect re-claim flow.
-CI runs it on Node 20, 22, and 24 (`.github/workflows/ci.yml`).
+server-side editing locks, acknowledged writes at every cap, the login throttle,
+the backup endpoint, the per-IP connection cap, and the disconnect-grace /
+reconnect re-claim flow.
+
+`npm run test:browser` drives the real frontend in headless Chrome (skips when no
+Chrome is installed; set `CHROME_PATH` to override detection) and covers the UX
+invariants: publish flow + lock overlay, draft-on-blur, the Esc checkpoint stack,
+reconnect re-sync (idle and deferred-while-editing), and multi-tab sync.
+
+CI runs both on every push/PR — the server suite on Node 20, 22, and 24, the
+browser suite on the runner's Chrome (`.github/workflows/ci.yml`).
 
 ## Project structure
 
@@ -375,8 +383,9 @@ chorus/
 ├── public/
 │   └── index.html         # Entire frontend: inline CSS + JS
 ├── test/
-│   └── server.test.js     # End-to-end tests (node:test) — `npm test`
-├── .github/workflows/ci.yml  # CI: npm ci + npm test on Node 20/22/24
+│   ├── server.test.js     # End-to-end API/realtime tests — `npm test`
+│   └── browser.test.js    # Headless-Chrome UX tests — `npm run test:browser`
+├── .github/workflows/ci.yml  # CI: server suite on Node 20/22/24 + browser suite
 ├── .env.example           # Documented configuration
 ├── Dockerfile             # Hardened container image (drops to non-root + healthcheck)
 ├── docker-entrypoint.sh   # Fixes /data volume ownership, then drops privileges

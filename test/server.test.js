@@ -321,6 +321,47 @@ test('topic cap rejections are acknowledged', async () => {
   } finally { capped.stop(); }
 });
 
+test('backup endpoint: 401 without a token, a real SQLite snapshot with one', async () => {
+  assert.equal((await srv.req('GET', '/api/backup')).status, 401);
+  const r = await srv.req('GET', '/api/backup', null, TOKEN);
+  assert.equal(r.status, 200);
+  assert.ok(String(r.body).startsWith('SQLite format 3'), 'download must be a SQLite database file');
+});
+
+test('login throttle: locked out after 10 attempts; a success resets the bucket', async () => {
+  const t = await spawnServer();
+  try {
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await t.req('POST', '/api/login', { username: USER, password: 'nope' })).status, 401);
+    }
+    // 11th attempt — even with CORRECT credentials — is throttled
+    assert.equal((await t.req('POST', '/api/login', { username: USER, password: PASSWORD })).status, 429);
+  } finally { t.stop(); }
+
+  const u = await spawnServer();
+  try {
+    for (let i = 0; i < 5; i++) await u.req('POST', '/api/login', { username: USER, password: 'nope' });
+    assert.equal((await u.req('POST', '/api/login', { username: USER, password: PASSWORD })).status, 200);
+    // the success cleared the bucket: 9 more failures stay 401, not 429
+    let last;
+    for (let i = 0; i < 9; i++) last = await u.req('POST', '/api/login', { username: USER, password: 'nope' });
+    assert.equal(last.status, 401, 'an office NAT must not lock itself out after one successful login');
+  } finally { u.stop(); }
+});
+
+test('concurrent sockets per IP are capped', async () => {
+  const capped = await spawnServer({ MAX_SOCKETS_PER_IP: '2' });
+  try {
+    const token = await capped.login();
+    const a = await capped.connect(token, { ownerId: 'o1', name: 'one' });
+    const b = await capped.connect(token, { ownerId: 'o2', name: 'two' });
+    assert.ok(a.ok && b.ok);
+    const c = await capped.connect(token, { ownerId: 'o3', name: 'three' });
+    assert.equal(c.ok, false, 'the connection over the cap must be rejected');
+    a.socket.close(); b.socket.close();
+  } finally { capped.stop(); }
+});
+
 // ---------------------------------------------------------------------------
 // Separate server: short grace window → disconnect semantics
 // ---------------------------------------------------------------------------

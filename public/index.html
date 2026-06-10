@@ -493,7 +493,8 @@
     let editBaseKind = 'published';  // what the block was before this edit session: 'new' | 'draft' | 'published'
 
     // Periodic auto-save of the block being edited (draft persisted to the server).
-    const AUTOSAVE_MS = 5000;
+    // Overridable via localStorage so the e2e tests don't have to wait 5s per cycle.
+    const AUTOSAVE_MS = Number(localStorage.getItem('chorus:autosaveMs')) || 5000;
     let autoSaveDirty = false, autoSaveLast = 0, autoSaveNext = 0, autoSaveTimer = null, autoSaveTick = null, myEditVerb = '';
     let lastPersistAt = 0;           // last time anything was persisted (survives edit-session resets) — for the idle "saved" time
 

@@ -169,6 +169,8 @@
   /* Connection status — shown while the realtime socket is dropped/reconnecting. */
   .conn-status { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 80; display: inline-flex; align-items: center; gap: 8px; background: var(--panel); color: var(--amber); border: 1px solid var(--amber); border-radius: 999px; padding: 6px 14px; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0,0,0,.4); }
   .conn-status.hidden { display: none; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 90; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 8px; padding: 9px 14px; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0,0,0,.4); opacity: 1; transition: opacity .4s; max-width: 70vw; }
+  .toast.fade { opacity: 0; }
   .online .label { font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; }
   .user-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; }
   .user-chip.me { border-color: var(--accent); }
@@ -541,6 +543,18 @@
     function nowISO() { return new Date().toISOString(); }
     function newId() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'b-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36); }
     function autoGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.max(ta.scrollHeight, 38) + 'px'; }
+    // Transient bottom-center notice (load failures, conflict rescues, …).
+    let toastEl = null, toastTimer = null;
+    function showToast(msg) {
+      if (toastEl) toastEl.remove();
+      if (toastTimer) clearTimeout(toastTimer);
+      toastEl = document.createElement('div');
+      toastEl.className = 'toast';
+      toastEl.textContent = msg;
+      document.body.appendChild(toastEl);
+      const el2 = toastEl;
+      toastTimer = setTimeout(() => { el2.classList.add('fade'); setTimeout(() => el2.remove(), 450); }, 4000);
+    }
 
     // ----- Markdown + Mermaid rendering (shows real syntax errors) -----
     // Renders markdown, then resolves ```mermaid fences. Invalid diagrams show
@@ -751,11 +765,26 @@
     function removeLocal(id) {
       const b = blocks.get(id);
       if (!b) return;
-      if (editingId === id) editingId = null;
+      let rescue = null;
+      if (editingId === id) {
+        // The block under my cursor was deleted remotely (only my own other
+        // session can do that — the server lock blocks everyone else). Keep my
+        // words: they reappear below as a fresh draft, never silently vanish.
+        rescue = { content: (b.ta ? b.ta.value : b.content) || '', position: b.position };
+        stopAutoSave();              // otherwise the auto-save timers spin forever
+        editingId = null;
+      }
       if (b.srcEl) b.srcEl.remove();
       if (b.renderEl) b.renderEl.remove();
       blocks.delete(id);
       ensureAffordances();
+      if (rescue && rescue.content.trim()) {
+        createMineAt(rescue.position, rescue.content);
+        showToast('This block was deleted elsewhere — your text was kept as a new draft.');
+      } else if (rescue) {
+        updateAutoSaveBar();
+        maybeResyncAfterEdit();
+      }
     }
 
     // ----- Editing (double-click any block to edit it inline) -----
@@ -815,6 +844,7 @@
       renumber();
       renderBlock(b);
       updateAutoSaveBar();                        // → "all changes saved"
+      maybeResyncAfterEdit();
     }
     // Publish a block so peers render it. The ONLY publish path (Shift+Enter).
     function publishBlock(b) {
@@ -829,6 +859,7 @@
       renderBlock(b);
       committing = false;
       updateAutoSaveBar();                     // → "all changes saved"
+      maybeResyncAfterEdit();
     }
     // Enter = newline in the block. Shift+Enter = the one explicit "publish".
     function onBlockKeydown(e, b) {
@@ -874,6 +905,7 @@
         removeLocal(b.id);
         committing = false;
         updateAutoSaveBar();
+        maybeResyncAfterEdit();
         return;
       }
       b.content = baseline;
@@ -891,6 +923,7 @@
       renderBlock(b);
       committing = false;
       updateAutoSaveBar();
+      maybeResyncAfterEdit();
     }
 
     function insertBelow(ref) {
@@ -910,14 +943,14 @@
       const minPos = reals.length ? Math.min(...reals.map((x) => x.position)) : 1;
       createMineAt(minPos - 1);
     }
-    function createMineAt(position) {
-      const b = { id: newId(), owner_id: myOwnerId, author: myName, last_modified_by: myName, content: '', position, updated_at: nowISO(), synced: false, state: 'editing' };
+    function createMineAt(position, content) {
+      const b = { id: newId(), owner_id: myOwnerId, author: myName, last_modified_by: myName, content: content || '', position, updated_at: nowISO(), synced: false, state: 'editing' };
       blocks.set(b.id, b);
       makeBlock(b);
       placeBlock(b);
       renderBlock(b);
       ensureAffordances();   // keep top/bottom add-rows present & positioned
-      startEdit(b, 0);
+      startEdit(b, b.content.length);
       b.srcEl.scrollIntoView({ block: 'nearest' });
     }
 
@@ -1146,8 +1179,26 @@
       dom.sourceInner.innerHTML = ''; dom.renderInner.innerHTML = '';
       renderPresence();
     }
+    // Leaving the topic mid-edit must release the editing lock — otherwise the
+    // block stays "modifying…" (content withheld) for everyone, forever. Leaving
+    // is treated like leaving the app: publish the draft (or drop it if empty).
+    function leaveEditSession() {
+      if (!editingId) return;
+      const b = blocks.get(editingId);
+      committing = true;               // the DOM teardown must not fire a real blur
+      stopAutoSave();
+      editingId = null;
+      if (b) {
+        b.content = b.ta ? b.ta.value : b.content;
+        if (!b.content.trim()) { if (b.synced) emitDelete(b); }
+        else { b.draftByMe = false; b.state = 'published'; publishEmit(b); }
+      }
+      committing = false;
+    }
     function selectTopic(id) {
       if (id === currentTopicId) return;
+      leaveEditSession();              // publish/release while the old topic is still current
+      pendingResync = false;           // any deferred re-sync belonged to the old topic
       currentTopicId = id;
       resetDoc();
       renderTopicList();
@@ -1163,11 +1214,26 @@
     }
     function joinTopicRoom() { if (currentTopicId && myName) socket.emit('topic:join', { topicId: currentTopicId, name: myName, ownerId: myOwnerId }); }
 
-    async function loadBlocks(id) {
+    let loadSeq = 0;                   // monotonically identifies the latest load (A→B→A safe)
+    async function loadBlocks(id, attempt) {
+      const seq = ++loadSeq;
       loadBuffer = [];                 // capture live block events that arrive during the fetch
-      let list = [];
-      try { list = await (await apiFetch(`/api/topics/${id}/blocks`)).json(); } catch (e) { list = []; }
-      if (id !== currentTopicId) return; // stale load — a newer load now owns loadBuffer
+      let list;
+      try {
+        const res = await apiFetch(`/api/topics/${id}/blocks`);
+        if (!res.ok) throw new Error('http ' + res.status);
+        list = await res.json();
+      } catch (e) {
+        // NEVER blank a populated document over a failed fetch (the failure is
+        // most likely mid-flaky-network — exactly when this runs on reconnect).
+        if (seq !== loadSeq || id !== currentTopicId) return;
+        loadBuffer = null;             // go back to applying live events directly
+        const n = (attempt || 0) + 1;
+        if (n <= 3) { setTimeout(() => { if (seq === loadSeq && id === currentTopicId) loadBlocks(id, n); }, 1500 * n); }
+        showToast('Couldn’t refresh this topic — will keep trying.');
+        return;
+      }
+      if (seq !== loadSeq || id !== currentTopicId) return; // a newer load owns loadBuffer
       resetDoc();
       const rows = Array.isArray(list) ? list : [];
       rows.forEach((row) => {
@@ -1183,7 +1249,7 @@
       });
       ensureAffordances();
       // Replay anything that arrived while fetching (in order), then go live.
-      const buffered = loadBuffer; loadBuffer = null;
+      const buffered = Array.isArray(loadBuffer) ? loadBuffer : []; loadBuffer = null;
       buffered.forEach((ev) => {
         if (ev.type === 'edit') applyRemoteBlock(ev.msg, false);
         else if (ev.type === 'publish') applyRemoteBlock(ev.msg, true);
@@ -1240,17 +1306,32 @@
 
     // ----- Connection lifecycle: reconnect-aware re-sync + a status indicator -----
     let everConnected = false;
+    let pendingResync = false;        // a reconnect happened mid-edit → re-sync once the edit ends
     socket.on('connect', () => {
       dom.connStatus.classList.add('hidden');     // (re)connected
       const reconnected = everConnected;
       everConnected = true;
       updateAutoSaveBar();                         // leave the "offline" warning state
+      if (reconnected) refreshTopics();            // topics created during the outage
       if (!currentTopicId) return;
       joinTopicRoom();                             // re-enter the topic room
       // After a drop we may have missed live events. Re-sync from the server —
-      // but not while you're mid-edit, so an active draft isn't blown away.
-      if (reconnected && !editingId) loadBlocks(currentTopicId);
+      // but not while you're mid-edit, so an active draft isn't blown away;
+      // instead it's deferred to the moment the edit session ends.
+      if (reconnected) {
+        if (!editingId) loadBlocks(currentTopicId);
+        else pendingResync = true;
+      }
     });
+    // Once the edit session is over, pull anything we missed during the outage
+    // (deletes especially — nothing else would ever bring those back).
+    function maybeResyncAfterEdit() {
+      if (!pendingResync || editingId) return;
+      pendingResync = false;
+      // Small delay so the write that ended the session lands server-side first
+      // (the emit and the fetch travel on different channels).
+      setTimeout(() => { if (!editingId && currentTopicId) loadBlocks(currentTopicId); }, 400);
+    }
     socket.on('disconnect', (reason) => {
       // Ignore deliberate client-side disconnects (e.g. logout); Socket.io will
       // auto-reconnect from any real drop, and this pill shows until it does.
@@ -1342,14 +1423,20 @@
       startApp();
     }
     // Connect the socket (with the token, if any) and load the topic list.
+    async function refreshTopics() {
+      try {
+        const list = await (await apiFetch('/api/topics')).json();
+        if (Array.isArray(list)) { topics = list; renderTopicList(); }
+      } catch (_) { /* offline — the next reconnect retries */ }
+    }
     async function startApp() {
       // Identity is bound to the socket at the handshake — the server keys the
       // editing locks and event attribution on this, never on event payloads.
       socket.auth = { token: authToken, ownerId: myOwnerId, name: myName };
       socket.connect();
       if (myName) dom.brandSub.textContent = 'you are ' + myName; else openNameModal();
-      try { topics = await (await apiFetch('/api/topics')).json(); } catch (e) { topics = []; }
       renderTopicList();
+      await refreshTopics();
     }
     boot();
   })();

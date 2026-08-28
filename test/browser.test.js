@@ -145,6 +145,24 @@ const noErrors = (page, who) => assert.deepEqual(page._errors, [], `${who} page 
 
 // ----- tests ---------------------------------------------------------------
 
+test('imports an existing Markdown file as a new topic', { skip: SKIP }, async () => {
+  const alice = await user('alice', 'oa-import');
+  await alice.evaluate(() => importMarkdownFile(new File(
+    ['# Imported heading\\n\\nA paragraph with **bold** text.'],
+    'project-notes.md',
+    { type: 'text/markdown' }
+  )));
+
+  assert.ok(await until(alice, () => document.querySelector('#topicTitle')?.textContent === 'project-notes'),
+    'the filename without its extension becomes the topic title');
+  assert.ok(await bodyHas(alice, '# Imported heading'), 'the Markdown source is loaded');
+  assert.ok(await until(alice, () => document.querySelector('#renderInner h1')?.textContent === 'Imported heading'),
+    'the imported Markdown is rendered');
+  assert.ok(await bodyHas(alice, 'A paragraph with bold text.'), 'the full document is present');
+  noErrors(alice, 'alice');
+  await alice.browserContext().close();
+});
+
 test('publish flows to peers; mid-edit content is withheld behind the overlay', { skip: SKIP }, async () => {
   const alice = await user('alice', 'oa-pub');
   const bob = await user('bob', 'ob-pub');

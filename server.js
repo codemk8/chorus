@@ -272,6 +272,14 @@ app.use(express.static(path.join(__dirname, 'public'), {
   },
 }));
 
+// Topic deep links — /t/<id> serves the same single-page app; the client reads
+// the id from the path and opens that topic once the list has loaded, so a
+// topic's URL can be shared directly.
+app.get('/t/:id(\\d+)', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // Light per-IP rate limit on the whole /api surface: /document can legitimately
 // be large, so a flood of reads is the cheapest way to hurt a small instance.
 // 120 requests / 10s per IP is far beyond anything the stock client does.

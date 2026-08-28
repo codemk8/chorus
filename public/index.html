@@ -134,6 +134,8 @@
   .brand .sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
   .new-topic { padding: 14px; border-bottom: 1px solid var(--border); }
   .new-topic-row { display: flex; gap: 8px; }
+  .import-topic { width: 100%; margin-top: 8px; background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .import-topic:hover { color: var(--text); border-color: var(--accent); }
   .new-topic input { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 8px; font-size: 13px; outline: none; }
   .new-topic input:focus { border-color: var(--accent); }
   .btn { background: var(--accent-2); color: #fff; border: none; border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background .15s ease, opacity .15s ease; }
@@ -334,6 +336,15 @@
   .modal .btn { width: 100%; margin-top: 14px; padding: 11px; font-size: 14px; }
   .modal .err { color: var(--danger); font-size: 12px; min-height: 16px; margin-top: 6px; text-align: center; }
 
+  /* PDF export options modal */
+  .pdf-modal { width: 400px; }
+  .pdf-modal .pdf-opt { display: flex; align-items: center; gap: 9px; font-size: 13.5px; padding: 6px 2px; cursor: pointer; user-select: none; }
+  .pdf-modal .pdf-opt input { accent-color: var(--accent-2); width: 15px; height: 15px; margin: 0; cursor: pointer; }
+  .pdf-modal .pdf-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 2px; font-size: 13.5px; }
+  .pdf-modal .pdf-row select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
+  .pdf-modal .pdf-row select:focus { border-color: var(--accent); }
+  .pdf-modal .btn.secondary { background: var(--chip); color: var(--text); margin-top: 8px; }
+
   .hidden { display: none !important; }
   @media (max-width: 820px) { .editor-wrap { flex-direction: column; } .pane.source { border-right: none; border-bottom: 1px solid var(--border); } }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -361,6 +372,32 @@
       <p>Published versions of this block — restore one as your draft, then Shift+Enter to publish.</p>
       <div class="hist-list" id="histList"></div>
       <button class="btn" id="histClose">Close</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="pdfModal">
+    <div class="modal pdf-modal">
+      <h2>Export to PDF</h2>
+      <p>Pick options, then save as PDF from the print dialog.</p>
+      <label class="pdf-opt"><input type="checkbox" id="pdfOptToc" /> Include table of contents</label>
+      <label class="pdf-opt"><input type="checkbox" id="pdfOptTitle" /> Include topic name as title</label>
+      <label class="pdf-opt"><input type="checkbox" id="pdfOptDate" /> Include export date</label>
+      <label class="pdf-opt"><input type="checkbox" id="pdfOptBreaks" /> Page break between blocks</label>
+      <div class="pdf-row"><span>Page size</span>
+        <select id="pdfOptPage">
+          <option value="a4">A4</option>
+          <option value="letter">Letter</option>
+        </select>
+      </div>
+      <div class="pdf-row"><span>Font size</span>
+        <select id="pdfOptFont">
+          <option value="12px">Small</option>
+          <option value="14px" selected>Normal</option>
+          <option value="16px">Large</option>
+        </select>
+      </div>
+      <button class="btn" id="pdfExportGo">Open print dialog</button>
+      <button class="btn secondary" id="pdfCancel">Cancel</button>
     </div>
   </div>
 
@@ -419,8 +456,10 @@
       <div class="new-topic">
         <div class="new-topic-row">
           <input id="topicInput" type="text" placeholder="New topic title…" maxlength="120" autocomplete="off" />
-          <button class="btn" id="topicCreate">+</button>
+          <button class="btn" id="topicCreate" title="Create topic" aria-label="Create topic">+</button>
         </div>
+        <button class="btn import-topic" id="importMarkdown" type="button">↑ Import Markdown</button>
+        <input id="importMarkdownFile" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden />
       </div>
       <div class="topics-head">Topics</div>
       <div class="topic-list" id="topicList"></div>
@@ -558,6 +597,7 @@
       loginModal: el('loginModal'), loginUser: el('loginUser'), loginInput: el('loginInput'), loginErr: el('loginErr'), loginSubmit: el('loginSubmit'),
       brandSub: el('brandSub'),
       topicInput: el('topicInput'), topicCreate: el('topicCreate'), topicList: el('topicList'),
+      importMarkdown: el('importMarkdown'), importMarkdownFile: el('importMarkdownFile'),
       placeholder: el('placeholder'), topicView: el('topicView'),
       topicTitle: el('topicTitle'), onlineList: el('onlineList'), editingLine: el('editingLine'),
       autosaveBar: el('autosaveBar'),
@@ -566,6 +606,10 @@
       themeSelect: el('themeSelect'), exportWrap: el('exportWrap'), exportBtn: el('exportBtn'), exportMenu: el('exportMenu'),
       connStatus: el('connStatus'),
       histModal: el('histModal'), histList: el('histList'), histClose: el('histClose'),
+      pdfModal: el('pdfModal'), pdfOptToc: el('pdfOptToc'), pdfOptTitle: el('pdfOptTitle'),
+      pdfOptDate: el('pdfOptDate'), pdfOptBreaks: el('pdfOptBreaks'),
+      pdfOptPage: el('pdfOptPage'), pdfOptFont: el('pdfOptFont'),
+      pdfExportGo: el('pdfExportGo'), pdfCancel: el('pdfCancel'),
     };
 
     // ----- Helpers -----
@@ -1302,6 +1346,59 @@
     dom.topicCreate.addEventListener('click', createTopic);
     dom.topicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createTopic(); });
 
+    // Import a local Markdown document as a new topic. Keeping the entire file
+    // in one published block preserves its source exactly and makes the import
+    // appear atomically to collaborators.
+    const MAX_IMPORT_CHARS = 100000;
+    function importedTopicTitle(filename) {
+      return String(filename || 'Imported document').replace(/\.(?:md|markdown)$/i, '').trim() || 'Imported document';
+    }
+    function importError(error) {
+      return error === 'cap' ? 'This server has reached its topic or block limit.' :
+        error === 'rate' ? 'Slow down — too many changes at once.' :
+        'Could not import the Markdown file.';
+    }
+    async function importMarkdownFile(file) {
+      if (!file) return;
+      let markdown;
+      try { markdown = await file.text(); }
+      catch (_) { showToast('Could not read that file.'); return; }
+      if (!markdown.trim()) { showToast('That Markdown file is empty.'); return; }
+      if (markdown.length > MAX_IMPORT_CHARS) {
+        showToast('Markdown files must be 100,000 characters or less.');
+        return;
+      }
+      const title = importedTopicTitle(file.name).slice(0, 120);
+      dom.importMarkdown.disabled = true;
+      socket.emit('topic:create', { title }, (created) => {
+        if (!created || created.ok !== true || !created.topic) {
+          dom.importMarkdown.disabled = false;
+          showToast(importError(created && created.error));
+          return;
+        }
+        const topic = created.topic;
+        if (!topics.some((t) => t.id === topic.id)) { topics.push(topic); renderTopicList(); }
+        socket.emit('block:publish', {
+          topicId: topic.id, id: newId(), content: markdown, position: 1,
+        }, (published) => {
+          dom.importMarkdown.disabled = false;
+          if (!published || published.ok !== true) {
+            showToast(importError(published && published.error));
+            socket.emit('topic:delete', { topicId: topic.id });
+            return;
+          }
+          selectTopic(topic.id);
+          showToast(`Imported ${file.name}.`);
+        });
+      });
+    }
+    dom.importMarkdown.addEventListener('click', () => dom.importMarkdownFile.click());
+    dom.importMarkdownFile.addEventListener('change', () => {
+      const file = dom.importMarkdownFile.files && dom.importMarkdownFile.files[0];
+      dom.importMarkdownFile.value = ''; // selecting the same file again must fire change
+      importMarkdownFile(file);
+    });
+
     function resetDoc() {
       blocks.clear(); editingId = null; stopAutoSave(); autoSaveLast = 0; autoSaveDirty = false;
       pendingSaves = 0; saveError = '';   // stale ack bookkeeping must not leak across topics
@@ -1325,11 +1422,39 @@
       }
       committing = false;
     }
-    function selectTopic(id) {
+    // ----- Topic deep links: every open topic lives at /t/<id> so its URL can
+    // be shared. selectTopic pushes the path; popstate walks back through it.
+    function topicIdFromPath() { const m = location.pathname.match(/^\/t\/(\d+)$/); return m ? Number(m[1]) : null; }
+    function syncTopicUrl(id, replace) {
+      const path = id ? '/t/' + id : '/';
+      if (location.pathname === path) return;
+      try { history[replace ? 'replaceState' : 'pushState']({ topicId: id }, '', path); } catch (_) {}
+    }
+    // Back to the sidebar-only view (topic closed via Back button or deletion).
+    function clearTopicView() {
+      currentTopicId = null;
+      resetDoc();
+      dom.topicView.classList.add('hidden');
+      dom.exportWrap.classList.add('hidden');
+      dom.placeholder.classList.remove('hidden');
+      renderTopicList();
+    }
+    window.addEventListener('popstate', () => {
+      const id = topicIdFromPath();
+      if (id) {
+        if (topics.some((t) => t.id === id)) selectTopic(id, true);
+      } else if (currentTopicId) {
+        leaveEditSession();
+        pendingResync = false;
+        clearTopicView();
+      }
+    });
+    function selectTopic(id, fromHistory) {
       if (id === currentTopicId) return;
       leaveEditSession();              // publish/release while the old topic is still current
       pendingResync = false;           // any deferred re-sync belonged to the old topic
       currentTopicId = id;
+      if (!fromHistory) syncTopicUrl(id);
       resetDoc();
       renderTopicList();
       const topic = topics.find((t) => t.id === id);
@@ -1422,11 +1547,8 @@
       topics = topics.filter((x) => x.id !== id);
       renderTopicList();
       if (currentTopicId === id) {
-        currentTopicId = null;
-        resetDoc();
-        dom.topicView.classList.add('hidden');
-        dom.exportWrap.classList.add('hidden');
-        dom.placeholder.classList.remove('hidden');
+        clearTopicView();
+        syncTopicUrl(null, true);      // the shared /t/<id> link is gone with the topic
         showToast('This topic was deleted.');
       }
     });
@@ -1538,37 +1660,90 @@
         setTimeout(() => URL.revokeObjectURL(url), 1500);
       } catch (_) { showToast('Backup failed — is the server reachable?'); }
     }
-    const PDF_CSS = `
+    const PDF_OPTS_KEY = 'chorus-pdf-opts';
+    const PDF_OPT_DEFAULTS = { toc: false, title: false, date: false, breaks: false, page: 'a4', font: '14px' };
+    function loadPdfOpts() {
+      try { return { ...PDF_OPT_DEFAULTS, ...JSON.parse(localStorage.getItem(PDF_OPTS_KEY) || '{}') }; }
+      catch (_) { return { ...PDF_OPT_DEFAULTS }; }
+    }
+    function pdfCss(opts) {
+      return `
       *{box-sizing:border-box}
-      body{font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2328;background:#fff;max-width:820px;margin:0 auto;padding:40px 34px}
+      @page{size:${opts.page === 'letter' ? 'Letter' : 'A4'};margin:18mm 16mm}
+      body{font:${opts.font}/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2328;background:#fff;max-width:820px;margin:0 auto;padding:40px 34px}
       .doc-title{font-size:26px;border-bottom:2px solid #d0d7de;padding-bottom:10px;margin:0 0 22px}
+      .doc-date{color:#57606a;font-size:.9em;margin:-14px 0 22px}
+      .toc{margin:0 0 26px}
+      .toc h2{font-size:1.2em;border-bottom:1px solid #e1e4e8;padding-bottom:5px;margin:0 0 8px}
+      .toc ul{list-style:none;padding:0;margin:0}
+      .toc li{margin:3px 0}
+      .toc li a{color:#1f2328}
+      .toc .toc-l2{padding-left:18px}.toc .toc-l3{padding-left:36px}.toc .toc-l4{padding-left:54px}
       section{margin:0 0 2px}
       h1,h2,h3,h4{line-height:1.25;margin:22px 0 10px}
-      h1{font-size:22px}h2{font-size:19px;border-bottom:1px solid #e1e4e8;padding-bottom:5px}h3{font-size:16px}
+      h1{font-size:1.6em}h2{font-size:1.35em;border-bottom:1px solid #e1e4e8;padding-bottom:5px}h3{font-size:1.15em}
       p{margin:8px 0}a{color:#0969da;text-decoration:none}
-      code{background:#f3f4f6;padding:2px 6px;border-radius:5px;font:12.5px "SF Mono",Menlo,Consolas,monospace}
+      code{background:#f3f4f6;padding:2px 6px;border-radius:5px;font:.9em "SF Mono",Menlo,Consolas,monospace}
       pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto;border:1px solid #e1e4e8}
       pre code{background:none;padding:0}
       blockquote{margin:10px 0;padding:4px 16px;border-left:4px solid #d0d7de;color:#57606a}
       table{border-collapse:collapse;margin:12px 0}th,td{border:1px solid #d0d7de;padding:6px 12px}th{background:#f6f8fa}
       img,svg{max-width:100%;height:auto}ul,ol{padding-left:26px}hr{border:none;border-top:1px solid #d0d7de;margin:20px 0}
-      @media print{body{padding:0;max-width:none}section{page-break-inside:avoid}}
+      @media print{body{padding:0;max-width:none}section{page-break-inside:avoid}${opts.breaks ? 'section+section{break-before:page}' : ''}}
     `;
-    function exportPDF() {
+    }
+    function exportPDF(opts) {
       if (!currentTopicId) return;
       const ordered = [...blocks.values()].sort((a, b) => a.position - b.position);
-      const body = ordered.map((b) => (b.renderBody && b.renderBody.innerHTML.trim()) ? `<section>${b.renderBody.innerHTML}</section>` : '').join('\n');
+      const holder = document.createElement('div');
+      holder.innerHTML = ordered.map((b) => (b.renderBody && b.renderBody.innerHTML.trim()) ? `<section>${b.renderBody.innerHTML}</section>` : '').join('\n');
+      let toc = '';
+      if (opts.toc) {
+        const heads = holder.querySelectorAll('h1,h2,h3,h4');
+        if (heads.length) {
+          let items = '';
+          heads.forEach((h, i) => {
+            h.id = 'sec-' + i;
+            items += `<li class="toc-l${h.tagName[1]}"><a href="#sec-${i}">${escapeText(h.textContent)}</a></li>`;
+          });
+          toc = `<nav class="toc"><h2>Contents</h2><ul>${items}</ul></nav>`;
+        }
+      }
       const title = currentTopicTitle();
+      const front =
+        (opts.title ? `<h1 class="doc-title">${escapeText(title)}</h1>` : '') +
+        (opts.date ? `<div class="doc-date">Exported ${escapeText(new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }))}</div>` : '');
       const w = window.open('', '_blank');
       if (!w) { alert('Pop-up blocked — allow pop-ups for this site to export PDF.'); return; }
-      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeText(title)}</title><style>${PDF_CSS}</style></head><body><h1 class="doc-title">${escapeText(title)}</h1>${body}<scr` + `ipt>window.onload=function(){setTimeout(function(){window.focus();window.print();},300);};</scr` + `ipt></body></html>`);
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeText(title)}</title><style>${pdfCss(opts)}</style></head><body>${front}${toc}${holder.innerHTML}<scr` + `ipt>window.onload=function(){setTimeout(function(){window.focus();window.print();},300);};</scr` + `ipt></body></html>`);
       w.document.close();
     }
+    function openPdfModal() {
+      if (!currentTopicId) return;
+      const opts = loadPdfOpts();
+      dom.pdfOptToc.checked = opts.toc; dom.pdfOptTitle.checked = opts.title;
+      dom.pdfOptDate.checked = opts.date; dom.pdfOptBreaks.checked = opts.breaks;
+      dom.pdfOptPage.value = opts.page; dom.pdfOptFont.value = opts.font;
+      dom.pdfModal.classList.remove('hidden');
+    }
+    function closePdfModal() { dom.pdfModal.classList.add('hidden'); }
+    dom.pdfCancel.addEventListener('click', closePdfModal);
+    dom.pdfModal.addEventListener('click', (e) => { if (e.target === dom.pdfModal) closePdfModal(); });
+    dom.pdfExportGo.addEventListener('click', () => {
+      const opts = {
+        toc: dom.pdfOptToc.checked, title: dom.pdfOptTitle.checked,
+        date: dom.pdfOptDate.checked, breaks: dom.pdfOptBreaks.checked,
+        page: dom.pdfOptPage.value, font: dom.pdfOptFont.value,
+      };
+      try { localStorage.setItem(PDF_OPTS_KEY, JSON.stringify(opts)); } catch (_) {}
+      closePdfModal();
+      exportPDF(opts);
+    });
     dom.exportBtn.addEventListener('click', (e) => { e.stopPropagation(); dom.exportMenu.classList.toggle('hidden'); });
     dom.exportMenu.addEventListener('click', (e) => {
       const btn = e.target.closest('button'); if (!btn) return;
       dom.exportMenu.classList.add('hidden');
-      if (btn.dataset.fmt === 'md') exportMarkdown(); else if (btn.dataset.fmt === 'pdf') exportPDF(); else if (btn.dataset.fmt === 'db') exportBackup();
+      if (btn.dataset.fmt === 'md') exportMarkdown(); else if (btn.dataset.fmt === 'pdf') openPdfModal(); else if (btn.dataset.fmt === 'db') exportBackup();
     });
     document.addEventListener('click', () => dom.exportMenu.classList.add('hidden'));
 
@@ -1598,6 +1773,12 @@
       if (myName) dom.brandSub.textContent = 'you are ' + myName; else openNameModal();
       renderTopicList();
       await refreshTopics();
+      // Deep link: a shared /t/<id> URL opens that topic once the list is in.
+      const deepId = topicIdFromPath();
+      if (deepId) {
+        if (topics.some((t) => t.id === deepId)) selectTopic(deepId, true);
+        else { syncTopicUrl(null, true); showToast('That topic doesn’t exist — it may have been deleted.'); }
+      }
     }
     boot();
   })();

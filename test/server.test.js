@@ -139,6 +139,15 @@ test('sends security headers and hides x-powered-by', async () => {
   assert.equal(r.headers['x-powered-by'], undefined);
 });
 
+test('topic deep link /t/<id> serves the app shell', async () => {
+  const r = await srv.req('GET', '/t/123');
+  assert.equal(r.status, 200);
+  assert.match(r.headers['content-type'] || '', /text\/html/);
+  assert.match(String(r.body), /Chorus/);
+  // Non-numeric ids fall through to the normal 404, not the shell.
+  assert.equal((await srv.req('GET', '/t/evil')).status, 404);
+});
+
 test('reports that auth is required', async () => {
   assert.equal((await srv.req('GET', '/api/auth')).body.required, true);
 });
